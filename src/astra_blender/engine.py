@@ -56,6 +56,16 @@ class Run:
         with (self.directory / "events.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(event, ensure_ascii=False) + "\n")
 
+    def write_error(self, error):
+        """Keep a redacted traceback beside the run, for diagnosis after the fact."""
+        import traceback
+
+        body = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        try:
+            (self.directory / "error.log").write_text(self.clean(body), encoding="utf-8")
+        except OSError:
+            pass
+
     def snapshot(self, after=0):
         return {
             "id": self.id,
@@ -96,6 +106,32 @@ class Run:
                 self.emit("deadline", waited_seconds=round(waited, 1))
 
 
+def first_cause(error):
+    """Dig the exception Astra raised out of a task group's ExceptionGroup.
+
+    The MCP client runs inside anyio task groups, which repackage anything
+    raised through them - twice over, in practice. Without this, a phase that
+    merely ran out of turns surfaces as a generic connection failure and sends
+    the reader off checking their API key.
+    """
+    if not isinstance(error, BaseExceptionGroup):
+        return error
+    leaves = []
+
+    def walk(group):
+        for item in group.exceptions:
+            walk(item) if isinstance(item, BaseExceptionGroup) else leaves.append(item)
+
+    walk(error)
+    # Prefer the reasons Astra raises deliberately over transport noise the
+    # group may have collected while unwinding.
+    for kind in (BudgetExceeded, asyncio.CancelledError, TimeoutError):
+        for leaf in leaves:
+            if isinstance(leaf, kind):
+                return leaf
+    return leaves[0] if leaves else error
+
+
 def result_parts(result):
     texts, images = [], []
     for block in result.content:
@@ -129,23 +165,36 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
                 await _loop(run, session, tools, provider)
         run.status = "completed"
         run.emit("completed", message="Quality loop finished. Inspect the scene before production use.")
-    except asyncio.CancelledError:
-        run.status = "cancelled"
-        run.emit(
-            "cancelled", message="Stopped sending commands. An in-flight Blender operation may still finish."
-        )
-    except BudgetExceeded as error:
-        run.status = "budget_exhausted"
-        run.emit("budget_exhausted", message=str(error))
-    except Exception as error:
-        run.status = "failed"
-        # Avoid provider exception bodies: they can contain credentials and request payloads.
-        run.emit(
-            "failed",
-            message=f"{type(error).__name__}: connection, provider or tool failed. "
-            "Check your model ID, API credentials, MCP configuration and Blender. "
-            "A timed-out operation may still be running; inspect Blender before retrying.",
-        )
+    except (Exception, asyncio.CancelledError, BaseExceptionGroup) as error:
+        cause = first_cause(error)
+        # The full traceback goes to disk, redacted, rather than to the browser:
+        # provider exception bodies can carry credentials and request payloads.
+        run.write_error(error)
+        if isinstance(cause, asyncio.CancelledError):
+            run.status = "cancelled"
+            run.emit(
+                "cancelled",
+                message="Stopped sending commands. An in-flight Blender operation may still finish.",
+            )
+        elif isinstance(cause, BudgetExceeded):
+            run.status = "budget_exhausted"
+            run.emit("budget_exhausted", message=str(cause))
+        elif isinstance(cause, TimeoutError):
+            run.status = "failed"
+            run.emit(
+                "failed",
+                message="TimeoutError: the run passed its time limit while working. "
+                "Waiting for your approval does not count towards it, so raise the run "
+                "timeout or simplify the brief. A Blender operation may still be running.",
+            )
+        else:
+            run.status = "failed"
+            run.emit(
+                "failed",
+                message=f"{type(cause).__name__}: connection, provider or tool failed. "
+                "Check your model ID, API credentials, MCP configuration and Blender. "
+                "See error.log in this run's files for the redacted traceback.",
+            )
     finally:
         manifest = {
             "schema_version": 1,
@@ -337,7 +386,10 @@ async def _loop(run, session, tools, provider):
                         old["content"] = [b for b in old["content"] if b.get("type") != "image_url"]
                     seen_image = True
         else:
-            raise BudgetExceeded(f"Phase '{stage}' did not finish within its turn budget; run is incomplete.")
+            raise BudgetExceeded(
+                f"Phase '{stage}' used all its model turns; the scene is incomplete. "
+                "Raise Maximum model turns and run again: build gets half of that total."
+            )
         if stage in {"build", "refine"}:
             await evidence()
             await save(f"{stage}.blend")

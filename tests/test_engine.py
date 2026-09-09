@@ -232,3 +232,53 @@ async def test_a_slow_approval_does_not_spend_the_run_deadline(tmp_path):
     manifest = json.loads((run.directory / "manifest.json").read_text())
     # The wait is reported rather than buried inside elapsed_seconds.
     assert manifest["awaiting_approval_seconds"] >= 5
+
+
+@asynccontextmanager
+async def task_group_connector(_, session=None):
+    """Repackage errors the way the real MCP client's anyio task groups do."""
+    try:
+        yield session or Session()
+    except BaseException as error:
+        # BaseExceptionGroup, as anyio uses: a plain ExceptionGroup cannot hold
+        # CancelledError, which is a BaseException.
+        raise BaseExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [BaseExceptionGroup("unhandled errors in a TaskGroup", [error])],
+        ) from None
+
+
+async def test_a_wrapped_budget_is_not_reported_as_a_connection_failure(tmp_path):
+    # A build phase that merely ran out of turns was surfacing as "connection,
+    # provider or tool failed. Check your model ID, API credentials...", because
+    # anyio had wrapped BudgetExceeded in two ExceptionGroups on the way out.
+    run = Run(RunConfig(prompt="Create a lamp", auto_approve=True), tmp_path)
+    await execute(run, MCPConfig(), Provider([action("get_scene_info")] * 5), task_group_connector)
+    assert run.status == "budget_exhausted"
+    assert "model turns" in run.events[-1]["message"]
+    assert "API credentials" not in run.events[-1]["message"]
+
+
+async def test_a_wrapped_cancellation_still_reads_as_cancelled(tmp_path):
+    run = Run(RunConfig(prompt="Create a lamp", auto_approve=True), tmp_path)
+
+    class Cancelling:
+        async def complete(self, messages, tools):
+            raise asyncio.CancelledError()
+
+    await execute(run, MCPConfig(), Cancelling(), task_group_connector)
+    assert run.status == "cancelled"
+
+
+async def test_a_genuine_failure_leaves_a_redacted_traceback(tmp_path):
+    class Broken:
+        async def complete(self, messages, tools):
+            raise RuntimeError("boom sk-secret-key-value")
+
+    run = Run(RunConfig(prompt="Create a lamp", auto_approve=True, api_key="sk-secret-key-value"), tmp_path)
+    await execute(run, MCPConfig(), Broken(), task_group_connector)
+    assert run.status == "failed"
+    log = (run.directory / "error.log").read_text(encoding="utf-8")
+    assert "RuntimeError" in log
+    assert "sk-secret-key-value" not in log
+    assert "[REDACTED]" in log
