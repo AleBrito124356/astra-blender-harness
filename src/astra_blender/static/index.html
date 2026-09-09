@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Astra · Blender Studio</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<header><a class="brand" href="/" aria-label="Astra home"><span class="mark">✳</span> ASTRA <span class="brand-sub">BLENDER STUDIO</span></a><div class="header-right"><span class="local">● LOCAL WORKSPACE</span><button id="demo" class="quiet">Explore demo ↗</button><a href="https://github.com/AleBrito124356/astra-blender-harness" target="_blank" rel="noreferrer">GitHub ↗</a></div></header>
+<main>
+<aside class="controls">
+<div class="eyebrow">01 / CREATIVE DIRECTION</div><h1>Give your ideas<br>a new dimension<span>.</span></h1><p class="intro">Your model. Your Blender. A little more intention in every iteration.</p>
+<form id="brief-form">
+<label for="prompt">Scene brief <span>Be specific. Think like an art director.</span></label><textarea id="prompt" required minlength="5" maxlength="16000" rows="5" placeholder="A sculptural ceramic lamp on a travertine plinth. Warm ivory glaze, soft side light, generous negative space. A premium product photograph."></textarea>
+<div class="presets"><button type="button" data-preset="product">Product study</button><button type="button" data-preset="room">Reading nook</button><button type="button" data-preset="abstract">Abstract form</button></div>
+<div class="divider"></div><div class="eyebrow">02 / YOUR INTELLIGENCE</div>
+<label for="provider">Provider</label><select id="provider"><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option><option value="openrouter">OpenRouter</option><option value="ollama_chat">Ollama · local</option><option value="custom">Custom / compatible API</option></select>
+<label for="model">Model <span>Editable provider/model ID</span></label><input id="model" value="openai/gpt-6-astra" required>
+<label for="api-key">API key <span>Memory only · never saved</span></label><input id="api-key" type="password" autocomplete="off" placeholder="Your provider API key">
+<label for="api-base">API base URL <span>Optional for standard providers</span></label><input id="api-base" type="url" placeholder="https://your-provider.example/v1">
+<div class="two"><div><label for="quality">Quality</label><select id="quality"><option value="draft">Draft · explore</option><option value="studio" selected>Studio · refine</option><option value="final">Final · finish</option></select></div><div><label for="tool-mode">Tool protocol</label><select id="tool-mode"><option value="native">Native tools</option><option value="json">JSON actions</option></select></div></div>
+<details><summary>Execution settings</summary><label for="steps">Maximum model turns</label><input id="steps" type="number" min="6" max="80" value="24"><label for="tokens">Reported token limit</label><input id="tokens" type="number" min="4096" max="1000000" value="150000"><label for="timeout">Run timeout · seconds</label><input id="timeout" type="number" min="30" max="3600" value="1200"></details>
+<label class="check"><input id="vision" type="checkbox" checked><span>Vision feedback<small>Let the model inspect viewport images.</small></span></label><label class="check"><input id="auto" type="checkbox"><span>Automatically approve Blender edits<small>Executes Python in your Blender session.</small></span></label>
+<button id="create" class="primary" type="submit">Create in Blender <span>↗</span></button><p class="privacy">Runs locally. Prompts and enabled image feedback go to your selected provider.</p>
+</form></aside>
+<section class="workspace" aria-label="Scene workspace">
+<div class="workspace-heading"><div><span class="eyebrow">THE WORKSPACE</span><h2>From intention to form.</h2></div><button id="connect">○ Check Blender</button></div>
+<div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+<div class="viewport"><div class="viewport-top"><span id="viewport-label">SCENE PREVIEW</span><span id="status" class="status">READY WHEN YOU ARE</span></div><div id="empty-view"><div class="orb"><div class="orb-inner"></div></div><div class="floor"></div><div class="empty-copy"><span class="eyebrow">MAKE SOMETHING WORTH LOOKING AT</span><p>A clear brief is the beginning.<br>Blender is the canvas.</p><small>Preview appears after connecting and starting a run.</small></div></div><img id="preview" alt="Latest Blender viewport evidence" hidden><div class="viewport-bottom"><span id="image-label">NO SCENE CONNECTED</span><span>✳ ART + ITERATION</span></div></div>
+<div id="gallery" class="gallery" aria-label="Viewport history"></div>
+<div class="phase-strip" aria-label="Quality workflow"><span data-phase="plan">01 <b>Plan</b></span><span data-phase="build">02 <b>Build</b></span><span data-phase="review">03 <b>Review</b></span><span data-phase="refine">04 <b>Refine</b></span><span data-phase="finalize">05 <b>Deliver</b></span></div>
+<div class="activity-heading"><div><span class="eyebrow">PROCESS, MADE VISIBLE</span><h2>Studio activity</h2></div><div class="activity-actions"><span id="usage">0 turns · 0 tokens</span><button id="stop" hidden>Stop run</button></div></div>
+<div id="activity" class="activity" aria-live="polite"><div class="activity-empty"><span>↗</span><p>The thinking. The tools. The finishing touches.<small>Your run will appear here, one step at a time.</small></p></div></div>
+<div class="deliverables"><h3>Deliverables</h3><p id="file-empty">Scene copies, viewport images and the run trace will appear here.</p><div id="files"></div></div>
+<footer><span>BUILT FOR CURIOUS MINDS.</span><a href="https://github.com/AleBrito124356/blender-quality-lab" target="_blank" rel="noreferrer">Explore the Quality Lab ↗</a></footer>
+</section></main></body></html>
