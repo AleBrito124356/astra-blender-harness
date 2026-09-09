@@ -7,9 +7,11 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, SecretStr
+from pydantic import Field as PydField
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from . import catalog, profiles
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig
 from .engine import TERMINAL, Run, execute, result_parts
@@ -94,6 +96,41 @@ def create_app(config=None, output=None):
                     503, "Cannot reach Blender. Check the MCP command, add-on and its Start button."
                 )
 
+    @app.get("/api/models", dependencies=[Depends(auth)])
+    async def model_catalog():
+        # Read from the installed LiteLLM catalog rather than a hand-kept list,
+        # so a wrong identifier fails in the picker instead of mid-run.
+        return {"providers": await asyncio.to_thread(catalog.models)}
+
+    @app.get("/api/profiles", dependencies=[Depends(auth)])
+    async def list_profiles():
+        return {"profiles": profiles.listing(), "secret_backend": profiles.secret_backend()}
+
+    class ProfileSave(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        name: str = PydField(min_length=1, max_length=40)
+        provider: str = PydField(default="custom", max_length=40)
+        model: str = PydField(min_length=1, max_length=200)
+        api_base: str | None = PydField(default=None, max_length=300)
+        tool_mode: str = PydField(default="native", max_length=10)
+        vision: bool = True
+        api_key: SecretStr = SecretStr("")
+
+    @app.put("/api/profiles", dependencies=[Depends(auth)])
+    async def save_profile(body: ProfileSave):
+        profile = profiles.Profile(**body.model_dump(exclude={"api_key"}))
+        try:
+            return profiles.save(profile, body.api_key.get_secret_value() or None)
+        except ValueError as error:
+            raise HTTPException(400, str(error))
+        except OSError:
+            raise HTTPException(500, "Could not write the profile file. Check disk permissions.")
+
+    @app.delete("/api/profiles/{name}", dependencies=[Depends(auth)])
+    async def delete_profile(name: str):
+        profiles.delete(name)
+        return {"ok": True}
+
     async def worker(run, demo):
         async with busy:
             if demo:
@@ -117,6 +154,11 @@ def create_app(config=None, output=None):
 
     @app.post("/api/runs", dependencies=[Depends(auth)])
     async def start_run(settings: RunConfig):
+        # A remembered key is resolved here, never sent to or from the browser.
+        if not settings.api_key.get_secret_value() and settings.profile:
+            remembered = profiles.load_secret(settings.profile)
+            if remembered:
+                settings = settings.model_copy(update={"api_key": SecretStr(remembered)})
         return start(settings)
 
     @app.post("/api/demo", dependencies=[Depends(auth)])

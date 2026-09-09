@@ -30,10 +30,14 @@ class RunConfig(BaseModel):
     model: str = Field(default="openai/gpt-6-astra", min_length=1, max_length=200)
     api_key: SecretStr = SecretStr("")
     api_base: str | None = None
+    # Name of a saved profile whose remembered key the server injects when
+    # api_key is empty. The key itself is never sent from the browser.
+    profile: str | None = Field(default=None, max_length=40)
     tool_mode: Literal["native", "json"] = "native"
     vision: bool = True
     auto_approve: bool = False
     quality: Literal["draft", "studio", "final"] = "studio"
+    screenshot_max_size: int = Field(default=1400, ge=256, le=2048)
     max_steps: int = Field(default=24, ge=6, le=80)
     max_output_tokens: int = Field(default=4096, ge=512, le=16384)
     max_total_tokens: int = Field(default=150000, ge=4096, le=1000000)

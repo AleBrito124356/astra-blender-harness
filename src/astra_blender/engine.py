@@ -158,8 +158,13 @@ async def _loop(run, session, tools, provider):
             return "TOOL ERROR: tool is unavailable or not allowed", []
         if readonly and name not in READ_ONLY:
             return "TOOL ERROR: this phase is read-only", []
-        if isinstance(args, dict) and "user_prompt" in tools[name].inputSchema.get("properties", {}):
+        properties = tools[name].inputSchema.get("properties", {})
+        if isinstance(args, dict) and "user_prompt" in properties:
             args = {**args, "user_prompt": run.config.prompt}
+        # Capture above the server's default so the saved evidence is worth
+        # inspecting at full size; an explicit model choice still wins.
+        if isinstance(args, dict) and "max_size" in properties and "max_size" not in args:
+            args = {**args, "max_size": run.config.screenshot_max_size}
         try:
             validate(args, tools[name].inputSchema)
         except ValidationError as error:

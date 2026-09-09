@@ -1,8 +1,9 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let token = '', runId = null, cursor = 0, polling = false, demoMode = false;
+let providers = [], savedProfiles = [], secretBackend = null;
 const objectUrls = [];
-const defaults = {openai:'openai/gpt-6-astra',anthropic:'anthropic/claude-opus-5',gemini:'gemini/gemini-2.5-flash',openrouter:'openrouter/anthropic/claude-sonnet-5',ollama_chat:'ollama_chat/qwen3',custom:'openai/your-model'};
+const CUSTOM = '__custom__';
 const presets = {
   product:'Create a sculptural ceramic lamp on a travertine plinth. Warm ivory glaze, subtle surface variation, soft side light and a dark warm-gray background. Premium product photograph with generous negative space. Build an original scene in a new ASTRA collection. Set a camera and save the scene.',
   room:'Create an isometric reading nook: walnut shelving, a comfortable moss-green chair, an arched window and a paper floor lamp. Late-afternoon light, believable scale, intentional small details and a quiet editorial composition. Use a new ASTRA collection and set a camera.',
@@ -14,8 +15,102 @@ async function api(path, options={}){
   if(!response.ok){let detail;try{detail=(await response.json()).detail;}catch{detail=response.statusText;}throw new Error(typeof detail==='string'?detail:'Request failed');}
   return response;
 }
-async function json(path,body){return (await api(path,body===undefined?{}:{method:'POST',body:JSON.stringify(body)})).json();}
+async function json(path,body,method){return (await api(path,body===undefined?{}:{method:method||'POST',body:JSON.stringify(body)})).json();}
 function busy(value){$('create').disabled=value;$('demo').disabled=value;$('connect').disabled=value;$('stop').hidden=!value;}
+
+/* ---------- model catalog ---------- */
+function group(name){return providers.find(p=>p.provider===name);}
+function fillProviders(){
+  $('provider').replaceChildren();
+  for(const entry of providers){const option=document.createElement('option');option.value=entry.provider;option.textContent=entry.label;$('provider').append(option);}
+}
+function fillModels(provider,preferred){
+  const entry=group(provider),list=entry?entry.models:[];
+  $('model-select').replaceChildren();
+  for(const model of list){
+    const option=document.createElement('option');option.value=model.id;
+    option.textContent=model.id.replace(provider+'/','')+(model.vision?'  ◉':'')+(model.tools?'':'  ⚠ no tools');
+    $('model-select').append(option);
+  }
+  const custom=document.createElement('option');custom.value=CUSTOM;custom.textContent='✎ Custom model ID…';$('model-select').append(custom);
+  const known=preferred&&list.some(m=>m.id===preferred);
+  $('model-select').value=known?preferred:(list.length?list[0].id:CUSTOM);
+  if(preferred&&!known)$('model').value=preferred;
+  syncCustom();
+}
+function syncCustom(){
+  const custom=$('model-select').value===CUSTOM;
+  $('model-custom').hidden=!custom;
+  if(custom)$('model').setAttribute('required','');else $('model').removeAttribute('required');
+  updateCaps();
+}
+function currentModel(){const value=$('model-select').value;return value===CUSTOM?$('model').value.trim():value;}
+function findModel(identifier){for(const entry of providers)for(const model of entry.models)if(model.id===identifier)return model;return null;}
+function updateCaps(){
+  const model=findModel(currentModel()),caps=$('model-caps');
+  if(!model){caps.hidden=true;return;}
+  const context=model.context?Math.round(model.context/1000)+'k context':'context unknown';
+  caps.textContent=`${model.tools?'✓ tool calling':'⚠ no tool calling'} · ${model.vision?'✓ vision':'✗ text only'} · ${context}`;
+  caps.className='caps'+(model.tools?'':' warn');caps.hidden=false;
+  // A text-only model cannot read viewport images; leaving vision on would send
+  // image_url blocks it rejects. The harness still saves them for the human.
+  if(!model.vision&&$('vision').checked){$('vision').checked=false;notice('Vision turned off: '+model.id+' is text only. Viewport images are still saved for you to inspect.');}
+  if(model.vision&&!$('vision').checked&&!$('vision').dataset.touched)$('vision').checked=true;
+  if(!model.tools&&$('tool-mode').value==='native'){$('tool-mode').value='json';notice('Tool protocol switched to JSON actions: '+model.id+' has no native tool calling.');}
+}
+
+/* ---------- saved setups ---------- */
+function fillProfiles(selected){
+  $('profile').replaceChildren();
+  const blank=document.createElement('option');blank.value='';blank.textContent='— New setup —';$('profile').append(blank);
+  for(const profile of savedProfiles){
+    const option=document.createElement('option');option.value=profile.name;
+    option.textContent=profile.name+(profile.has_secret?'  ·  key saved':'');$('profile').append(option);
+  }
+  $('profile').value=selected||'';$('profile-delete').disabled=!$('profile').value;
+}
+async function loadProfiles(selected){
+  const data=await json('/profiles',undefined,'GET');
+  savedProfiles=data.profiles;secretBackend=data.secret_backend;
+  fillProfiles(selected);
+  $('remember-note').textContent=secretBackend
+    ?'Model and settings on disk; key in the OS keyring ('+secretBackend+').'
+    :'Model and settings only. Install the keyring extra to remember the key.';
+}
+function applyProfile(name){
+  const profile=savedProfiles.find(p=>p.name===name);
+  $('profile-delete').disabled=!name;
+  if(!profile)return;
+  $('provider').value=group(profile.provider)?profile.provider:'custom';
+  fillModels($('provider').value,profile.model);
+  $('api-base').value=profile.api_base||'';
+  $('tool-mode').value=profile.tool_mode;$('vision').checked=profile.vision;
+  $('profile-name').value=profile.name;$('api-key').value='';
+  $('key-hint').textContent=profile.has_secret?'Remembered — leave blank to reuse it':'Memory only · never saved';
+  notice(profile.has_secret?'Using the key saved for “'+profile.name+'”. Type one here only to override it.':'“'+profile.name+'” has no saved key. Paste it below.');
+}
+async function saveProfile(){
+  const name=$('profile-name').value.trim();
+  if(!name){notice('Name the setup before saving it.');return;}
+  const model=currentModel();
+  if(!model){notice('Choose or type a model ID before saving.');return;}
+  try{
+    const result=await json('/profiles',{name,provider:$('provider').value,model,
+      api_base:$('api-base').value.trim()||null,tool_mode:$('tool-mode').value,vision:$('vision').checked,
+      api_key:$('remember').checked?$('api-key').value:''},'PUT');
+    await loadProfiles(name);applyProfile(name);
+    notice(result.remembered?'Saved “'+name+'” with its key in the OS keyring.':'Saved “'+name+'”. The key was not stored.');
+  }catch(error){notice(error.message);}
+}
+async function deleteProfile(){
+  const name=$('profile').value;
+  if(!name)return;
+  try{await json('/profiles/'+encodeURIComponent(name),{},'DELETE');await loadProfiles('');
+    $('key-hint').textContent='Memory only · never saved';notice('Deleted “'+name+'” and any key stored for it.');}
+  catch(error){notice(error.message);}
+}
+
+/* ---------- runs ---------- */
 function reset(){
   for(const url of objectUrls)URL.revokeObjectURL(url);objectUrls.length=0;
   cursor=0;$('activity').replaceChildren();$('gallery').replaceChildren();$('files').replaceChildren();
@@ -26,10 +121,13 @@ function reset(){
 async function start(demo=false){
   busy(true);notice('');demoMode=demo;
   try{
-    const body={prompt:$('prompt').value,model:$('model').value.trim(),api_key:$('api-key').value,
+    const model=currentModel();
+    if(!demo&&!model){notice('Choose a model first.');busy(false);return;}
+    const body={prompt:$('prompt').value,model,api_key:$('api-key').value,profile:$('profile').value||null,
       api_base:$('api-base').value.trim()||null,quality:$('quality').value,tool_mode:$('tool-mode').value,
       vision:$('vision').checked,auto_approve:$('auto').checked,max_steps:Number($('steps').value),
-      max_total_tokens:Number($('tokens').value),timeout_seconds:Number($('timeout').value)};
+      max_total_tokens:Number($('tokens').value),timeout_seconds:Number($('timeout').value),
+      screenshot_max_size:Number($('shot').value)};
     const data=await json(demo?'/demo':'/runs',demo?{}:body);
     runId=data.id;reset();$('status').textContent=demo?'DEMO · SIMULATED':'CONNECTING';
     $('viewport-label').textContent=demo?'OFFLINE DEMO · ILLUSTRATION':'BLENDER VIEWPORT';
@@ -81,11 +179,36 @@ async function loadFiles(){
   const data=await json('/runs/'+runId+'/files');$('files').replaceChildren();$('file-empty').hidden=!!data.files.length;
   for(const file of data.files){const button=document.createElement('button');button.textContent='↓ '+file;button.onclick=async()=>{try{const response=await api('/runs/'+runId+'/files/'+encodeURIComponent(file));const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download=file;link.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}catch(error){notice(error.message);}};$('files').append(button);}
 }
+
+/* ---------- wiring ---------- */
 $('brief-form').onsubmit=event=>{event.preventDefault();start();};
 $('demo').onclick=()=>start(true);
-$('provider').onchange=()=>{const provider=$('provider').value;$('model').value=defaults[provider];$('api-base').value=provider==='ollama_chat'?'http://localhost:11434':'';$('api-key').value='';if(provider==='ollama_chat')$('vision').checked=false;};
+$('provider').onchange=()=>{
+  const provider=$('provider').value;
+  fillModels(provider);
+  $('api-base').value=provider==='ollama_chat'?'http://localhost:11434':'';
+  if($('api-key').value){$('api-key').value='';notice('Provider changed, so the key field was cleared. Paste the new provider’s key or pick a saved setup.');}
+  if(provider==='ollama_chat')$('vision').checked=false;
+};
+$('model-select').onchange=syncCustom;
+$('model').oninput=updateCaps;
+$('vision').onchange=()=>{$('vision').dataset.touched='1';};
+$('profile').onchange=()=>applyProfile($('profile').value);
+$('profile-save').onclick=saveProfile;
+$('profile-delete').onclick=deleteProfile;
+$('expand').onclick=()=>{const on=document.body.classList.toggle('expanded');$('expand').textContent=on?'⤡':'⤢';$('expand').title=on?'Restore the viewport':'Expand the viewport';};
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('expanded'))$('expand').click();});
 document.querySelectorAll('[data-preset]').forEach(button=>button.onclick=()=>{$('prompt').value=presets[button.dataset.preset];$('prompt').focus();});
 $('connect').onclick=async()=>{$('connect').disabled=true;notice('Checking MCP and the Blender scene…');try{const data=await json('/doctor',{});$('connect').textContent='● Blender connected';notice('Connected. Available tools: '+data.tools.join(', '));}catch(error){$('connect').textContent='○ Check Blender';notice(error.message);}finally{$('connect').disabled=false;}};
 $('stop').onclick=async()=>{if(runId){try{await json('/runs/'+runId+'/cancel',{});notice('Stop requested. An in-flight Blender operation may still finish.');}catch(error){notice(error.message);}}};
 window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault();event.returnValue='A Blender run is active.';}});
-(async()=>{busy(true);$('stop').hidden=true;try{const session=await (await fetch('/api/session')).json();token=session.token;busy(false);}catch{notice('Cannot reach the local Astra server. Start astra-blender serve and reload.');}})();
+(async()=>{
+  busy(true);$('stop').hidden=true;
+  try{
+    const session=await (await fetch('/api/session')).json();token=session.token;
+    const data=await json('/models',undefined,'GET');providers=data.providers;
+    fillProviders();$('provider').value='openai';fillModels('openai');
+    await loadProfiles('');
+    busy(false);
+  }catch{notice('Cannot reach the local Astra server. Start astra-blender serve and reload.');}
+})();

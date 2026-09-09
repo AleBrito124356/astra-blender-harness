@@ -4,7 +4,7 @@
 
 **Bring your model. Build in Blender. See what actually happened.**
 
-A local studio and CLI that connects API models to [Blender MCP](https://github.com/ahujasid/blender-mcp). It discovers real tools, builds in small steps, captures viewport evidence, asks the model to critique the scene, refines it, and saves scene copies. Your API key stays in memory; there is no Astra account or hosted proxy.
+A local studio and CLI that connects API models to [Blender MCP](https://github.com/ahujasid/blender-mcp). It discovers real tools, builds in small steps, captures viewport evidence, asks the model to critique the scene, refines it, and saves scene copies. There is no Astra account or hosted proxy. Your API key stays in memory by default; if you choose to save a setup, the key goes to your operating system keyring and never to a file.
 
 ![Astra Blender Studio](docs/studio.png)
 
@@ -20,7 +20,7 @@ cd astra-blender-harness
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
-python -m pip install -e .
+python -m pip install -e '.[keyring]'   # plain '.' also works; the key is then not remembered
 astra-blender serve
 ```
 
@@ -31,13 +31,16 @@ Use **Demo** to explore the full workflow without a key or Blender. Demo evidenc
 ## What is implemented
 
 - Real MCP SDK client: stdio and Streamable HTTP, paginated discovery, JSON Schema validation.
-- [LiteLLM](https://docs.litellm.ai/docs/providers) provider routing: OpenAI, Anthropic, Gemini, OpenRouter, Ollama and compatible endpoints. Use any supported `provider/model` identifier.
+- [LiteLLM](https://docs.litellm.ai/docs/providers) provider routing: OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, Ollama and compatible endpoints. Use any supported `provider/model` identifier.
+- Model picker built from the installed LiteLLM catalog, showing tool-calling and vision support per model. A wrong identifier is caught in the form instead of failing on the first model turn.
+- Saved setups: provider, model, API base and defaults in a local config file; the API key only in the OS keyring, never in that file. Install with the `keyring` extra to enable it.
 - Native tool calls, plus a strict JSON-action mode for text models without native tool use. Malformed responses get bounded repair attempts.
 - Plan → build → review → refine → finalize. Read-only planning/review, mandatory scene/viewport evidence and `.blend` checkpoints. Draft skips refinement.
 - Optional visual feedback. Text-only models still receive scene information; humans can inspect saved viewport images.
 - Sequential Blender operations, approval queue, cancellation, deadlines, turn/token limits and no automatic mutation retries.
 - Live activity, viewport gallery, downloadable manifests, trace and scene files. No fabricated success status when the run fails or exhausts its budget.
 - Runs saved to `./runs/<id>/`. The harness copies scenes rather than overwriting the original `.blend`.
+- Resizable viewport panel with an expand mode, and a configurable capture size. Note that `max_size` only downscales: the real resolution is the size of your 3D viewport area inside Blender.
 
 ## Recommended starting models
 

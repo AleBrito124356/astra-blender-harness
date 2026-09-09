@@ -13,7 +13,10 @@ authors = [{name = "Alejandro Brito"}]
 dependencies = ["mcp>=1.26,<2", "litellm>=1.81,<2", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "jsonschema>=4.23,<5"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "httpx>=0.28,<1", "ruff>=0.11,<1", "build>=1,<2"]
+# Optional: lets Astra remember an API key in the OS keyring instead of asking
+# for it every session. Without it, profiles still save everything but the key.
+keyring = ["keyring>=25,<26"]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "httpx>=0.28,<1", "ruff>=0.11,<1", "build>=1,<2", "keyring>=25,<26"]
 
 [project.scripts]
 astra-blender = "astra_blender.cli:main"
