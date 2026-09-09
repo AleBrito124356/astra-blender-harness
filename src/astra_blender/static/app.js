@@ -79,6 +79,21 @@ async function fetchModels(){
   finally{$('model-fetch').disabled=false;}
 }
 
+async function loadResumable(){
+  try{
+    const data=await json('/runs/resumable',undefined,'GET');
+    const select=$('resume');select.replaceChildren();
+    const blank=document.createElement('option');blank.value='';blank.textContent='— Start a new run —';select.append(blank);
+    for(const entry of data.runs){
+      const option=document.createElement('option');option.value=entry.id;
+      const when=new Date(entry.updated*1000).toLocaleString();
+      option.textContent=`${entry.stage} · ${entry.steps} turns · ${when} · ${entry.prompt.slice(0,48)}`;
+      select.append(option);
+    }
+    $('resume-box').hidden=!data.runs.length;
+  }catch{$('resume-box').hidden=true;}
+}
+
 /* ---------- saved setups ---------- */
 function fillProfiles(selected){
   $('profile').replaceChildren();
@@ -147,7 +162,10 @@ async function start(demo=false){
       api_base:$('api-base').value.trim()||null,quality:$('quality').value,tool_mode:$('tool-mode').value,
       vision:$('vision').checked,auto_approve:$('auto').checked,max_steps:Number($('steps').value),
       max_total_tokens:Number($('tokens').value),timeout_seconds:Number($('timeout').value),
-      screenshot_max_size:Number($('shot').value)};
+      screenshot_max_size:Number($('shot').value),build_max_steps:Number($('build-steps').value),
+      inspect_max_steps:Number($('inspect-steps').value),resume_from:$('resume').value||null};
+    if(!demo&&!body.max_steps&&!body.max_total_tokens&&!body.timeout_seconds)
+      notice('No turn, token or time limit is set. Only Stop will end this run.');
     const data=await json(demo?'/demo':'/runs',demo?{}:body);
     runId=data.id;reset();$('status').textContent=demo?'DEMO · SIMULATED':'CONNECTING';
     $('viewport-label').textContent=demo?'OFFLINE DEMO · ILLUSTRATION':'BLENDER VIEWPORT';
@@ -189,7 +207,7 @@ async function poll(){
     if(['completed','failed','cancelled','budget_exhausted'].includes(data.status)){
       polling=false;busy(false);
       document.querySelectorAll('.approval-actions button').forEach(button=>button.disabled=true);
-      await loadFiles();
+      await loadFiles();await loadResumable();
       if(data.status!=='completed')notice('Run '+data.status.replaceAll('_',' ')+'. Inspect the activity and Blender before starting again. Partial files remain available.');
     }
   }catch(error){notice('Connection interrupted: '+error.message+'. Retrying…');}
@@ -216,6 +234,7 @@ $('model').oninput=updateCaps;
 $('vision').onchange=()=>{$('vision').dataset.touched='1';};
 $('profile').onchange=()=>applyProfile($('profile').value);
 $('profile-save').onclick=saveProfile;
+$('resume-clear').onclick=()=>{$('resume').value='';};
 $('profile-delete').onclick=deleteProfile;
 $('expand').onclick=()=>{const on=document.body.classList.toggle('expanded');$('expand').textContent=on?'⤡':'⤢';$('expand').title=on?'Restore the viewport':'Expand the viewport';};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('expanded'))$('expand').click();});
@@ -230,6 +249,7 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
     const data=await json('/models',undefined,'GET');providers=data.providers;
     fillProviders();$('provider').value='openai';fillModels('openai');
     await loadProfiles('');
+    await loadResumable();
     busy(false);
   }catch{notice('Cannot reach the local Astra server. Start astra-blender serve and reload.');}
 })();

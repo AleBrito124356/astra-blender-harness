@@ -13,6 +13,33 @@ from .config import MCPConfig, RunConfig
 from .prompts import STAGES, SYSTEM
 from .provider import LiteLLMProvider, parse_json_action
 
+# A budget field set to zero means "no limit"; this stands in for infinity so
+# the comparisons and range() below stay ordinary integer arithmetic.
+UNCAPPED = 10**9
+
+
+def budget(value):
+    return UNCAPPED if not value else value
+
+
+def _build_share(config):
+    """Turns the build phase may use when no explicit cap is set."""
+    return UNCAPPED if not config.max_steps else max(2, config.max_steps // 2)
+
+
+def without_images(messages):
+    """Drop image payloads before persisting: they are large, and a resumed run
+    captures fresh viewport evidence anyway."""
+    lean = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            kept = [block for block in content if block.get("type") != "image_url"]
+            message = {**message, "content": kept or "Image evidence omitted from the saved state."}
+        lean.append(message)
+    return lean
+
+
 READ_ONLY = {"get_scene_info", "get_object_info", "get_viewport_screenshot"}
 TERMINAL = {"completed", "failed", "cancelled", "budget_exhausted"}
 
@@ -37,6 +64,10 @@ class Run:
         # Set by execute(); lets a human approval pause the run deadline.
         self.deadline = None
         self.waited_for_approval = 0.0
+        # The live conversation and phase, so execute() can persist a run
+        # that stopped early without reaching back into the loop.
+        self.messages = []
+        self.current_stage = None
 
     def clean(self, value):
         if isinstance(value, str):
@@ -63,6 +94,25 @@ class Run:
         body = "".join(traceback.format_exception(type(error), error, error.__traceback__))
         try:
             (self.directory / "error.log").write_text(self.clean(body), encoding="utf-8")
+        except OSError:
+            pass
+
+    def save_state(self, messages, stage):
+        """Persist enough to continue this run later. The scene itself stays in
+        Blender, so a resumed run re-inspects rather than trusting this copy."""
+        state = {
+            "schema_version": 1,
+            "stage": stage,
+            "steps": self.steps,
+            "total_tokens": self.total_tokens,
+            "prompt": self.config.prompt,
+            "quality": self.config.quality,
+            "messages": without_images(messages),
+        }
+        try:
+            (self.directory / "state.json").write_text(
+                json.dumps(self.clean(state), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         except OSError:
             pass
 
@@ -146,7 +196,7 @@ def result_parts(result):
     return prefix + "\n".join(texts)[:20000], images
 
 
-async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=connect):
+async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=connect, state=None):
     provider = provider or LiteLLMProvider(run.config)
     run.status = "running"
     run.emit(
@@ -157,12 +207,13 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
         output_dir=str(run.directory),
     )
     try:
-        async with asyncio.timeout(run.config.timeout_seconds) as deadline:
+        # timeout(None) is asyncio's own way to say "no deadline".
+        async with asyncio.timeout(run.config.timeout_seconds or None) as deadline:
             run.deadline = deadline
             async with connector(mcp_config) as session:
                 tools = await discover(session, mcp_config.allowed_tools)
                 run.emit("connected", tools=list(tools))
-                await _loop(run, session, tools, provider)
+                await _loop(run, session, tools, provider, state)
         run.status = "completed"
         run.emit("completed", message="Quality loop finished. Inspect the scene before production use.")
     except (Exception, asyncio.CancelledError, BaseExceptionGroup) as error:
@@ -196,6 +247,10 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
                 "See error.log in this run's files for the redacted traceback.",
             )
     finally:
+        # Saved on success and failure alike: a run that stopped early is
+        # exactly the one worth continuing.
+        if run.messages:
+            run.save_state(run.messages, run.current_stage or STAGES[0][0])
         manifest = {
             "schema_version": 1,
             "id": run.id,
@@ -211,7 +266,7 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
         (run.directory / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
 
-async def _loop(run, session, tools, provider):
+async def _loop(run, session, tools, provider, state=None):
     messages = [
         {"role": "system", "content": SYSTEM},
         {
@@ -219,6 +274,19 @@ async def _loop(run, session, tools, provider):
             "content": f"BRIEF: {run.config.prompt}\nQUALITY: {run.config.quality}\noutput_dir: {run.directory.as_posix()}",
         },
     ]
+    if state:
+        # A resumed run inherits the earlier conversation, which carries the
+        # plan and what was already built.
+        messages = list(state.get("messages") or [])
+        messages.append(
+            {
+                "role": "user",
+                "content": "RESUMING this run with a fresh budget. Your earlier work is already "
+                "in the Blender scene, so inspect the current state first and continue from "
+                "there. Do not rebuild what exists. New output_dir: " + run.directory.as_posix(),
+            }
+        )
+    run.messages = messages
     image_count = 0
 
     async def call(name, args, *, internal=False, readonly=False):
@@ -296,7 +364,12 @@ async def _loop(run, session, tools, provider):
     await evidence()
     await save("checkpoint.blend")
     stages = STAGES if run.config.quality != "draft" else [s for s in STAGES if s[0] != "refine"]
+    names = [s[0] for s in stages]
+    if state and state.get("stage") in names:
+        stages = stages[names.index(state["stage"]) :]
+        run.emit("resumed", stage=state["stage"], previous_steps=state.get("steps", 0))
     for stage, instruction in stages:
+        run.current_stage = stage
         run.emit("phase", phase=stage)
         messages.append({"role": "user", "content": f"PHASE {stage.upper()}: {instruction}"})
         readonly = stage in {"plan", "review"}
@@ -318,14 +391,18 @@ async def _loop(run, session, tools, provider):
             )
         # Reserve at least one model turn for every remaining phase.
         remaining = len(stages) - [s[0] for s in stages].index(stage) - 1
-        phase_limit = max(1, run.config.max_steps - run.steps - remaining)
+        total = budget(run.config.max_steps)
+        phase_limit = max(1, total - run.steps - remaining)
         if stage in {"plan", "review"}:
-            phase_limit = min(phase_limit, 3)
+            phase_limit = min(phase_limit, run.config.inspect_max_steps)
         elif stage == "build":
-            phase_limit = min(phase_limit, max(2, run.config.max_steps // 2))
+            phase_limit = min(phase_limit, run.config.build_max_steps or _build_share(run.config))
         for _ in range(phase_limit):
-            if run.steps >= run.config.max_steps or run.total_tokens >= run.config.max_total_tokens:
-                raise BudgetExceeded("Model-turn or token budget reached; run is incomplete.")
+            if run.steps >= total or run.total_tokens >= budget(run.config.max_total_tokens):
+                raise BudgetExceeded(
+                    "Model-turn or token budget reached; the scene is incomplete. "
+                    "Continue this run, or raise the budgets and start again."
+                )
             run.steps += 1
             message, usage = await provider.complete(messages, offered)
             run.total_tokens += usage.get("total_tokens", 0) or 0

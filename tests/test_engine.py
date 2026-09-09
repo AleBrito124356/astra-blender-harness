@@ -282,3 +282,86 @@ async def test_a_genuine_failure_leaves_a_redacted_traceback(tmp_path):
     assert "RuntimeError" in log
     assert "sk-secret-key-value" not in log
     assert "[REDACTED]" in log
+
+
+async def test_a_stopped_run_saves_state_and_can_be_continued(tmp_path):
+    # The model had a plan for the rest of the scene and simply ran out of
+    # turns mid-build; there was no way to carry on from there.
+    session = Session()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    plan_then_build = [{"role": "assistant", "content": "Plan done"}] + [action()] * 5
+    first = Run(
+        RunConfig(prompt="Create a lamp", auto_approve=True, build_max_steps=1),
+        tmp_path,
+    )
+    await execute(first, MCPConfig(), Provider(plan_then_build), connector)
+    assert first.status == "budget_exhausted"
+
+    saved = json.loads((first.directory / "state.json").read_text(encoding="utf-8"))
+    assert saved["stage"] == "build"
+    assert saved["steps"] == 2
+
+    second = Run(RunConfig(prompt="Create a lamp", auto_approve=True), tmp_path)
+    await execute(second, MCPConfig(), Provider(), connector, state=saved)
+    assert second.status == "completed"
+    # Resumed at build, so planning is not repeated, and the model is told the
+    # scene already holds its earlier work.
+    assert [e["phase"] for e in second.events if e["type"] == "phase"] == [
+        "build",
+        "review",
+        "refine",
+        "finalize",
+    ]
+    assert any("RESUMING" in str(m.get("content", "")) for m in second.messages)
+    assert (second.directory / "scene.blend").exists()
+
+
+async def test_saved_state_carries_no_images_and_no_key(tmp_path):
+    session = Session()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    run = Run(
+        RunConfig(prompt="Create a lamp", auto_approve=True, api_key="sk-secret-key-value"),
+        tmp_path,
+    )
+    await execute(run, MCPConfig(), Provider(), connector)
+    body = (run.directory / "state.json").read_text(encoding="utf-8")
+    assert "sk-secret-key-value" not in body
+    # Image payloads are large and a resumed run re-captures the viewport.
+    assert "image_url" not in body
+    assert "data:image" not in body
+
+
+async def test_zero_budgets_mean_no_limit(tmp_path):
+    from astra_blender.engine import UNCAPPED, budget
+
+    assert budget(0) == UNCAPPED
+    assert budget(12) == 12
+
+    session = Session()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    # Nothing caps this run but the model choosing to finish each phase.
+    run = Run(
+        RunConfig(
+            prompt="Create a lamp",
+            auto_approve=True,
+            max_steps=0,
+            max_total_tokens=0,
+            timeout_seconds=0,
+        ),
+        tmp_path,
+    )
+    await execute(run, MCPConfig(), Provider(), connector)
+    assert run.status == "completed"
+    assert run.deadline.when() is None

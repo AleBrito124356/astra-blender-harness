@@ -1,4 +1,5 @@
 import asyncio
+import json
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -158,16 +159,16 @@ def create_app(config=None, output=None):
         profiles.delete(name)
         return {"ok": True}
 
-    async def worker(run, demo):
+    async def worker(run, demo, state):
         async with busy:
             if demo:
                 from .demo import DemoProvider, demo_connect
 
                 await execute(run, config, provider=DemoProvider(), connector=demo_connect)
             else:
-                await execute(run, config)
+                await execute(run, config, state=state)
 
-    def start(settings, demo=False):
+    def start(settings, demo=False, state=None):
         if busy.locked() or any(r.status not in TERMINAL for r in runs.values()):
             raise HTTPException(409, "Wait for or stop the current run")
         if len(runs) >= 50:
@@ -176,8 +177,19 @@ def create_app(config=None, output=None):
         runs[run.id] = run
         if demo:
             run.emit("demo", message="DEMO: scripted model and simulated Blender. Images are illustrations.")
-        run.task = asyncio.create_task(worker(run, demo))
+        run.task = asyncio.create_task(worker(run, demo, state))
         return {"id": run.id}
+
+    def load_state(run_id):
+        # run_id is pattern-checked to 32 hex characters, so this cannot escape
+        # the output directory.
+        path = output / run_id / "state.json"
+        if not path.is_file():
+            raise HTTPException(404, "That run has no saved state to continue from")
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise HTTPException(422, "That run's saved state is unreadable")
 
     @app.post("/api/runs", dependencies=[Depends(auth)])
     async def start_run(settings: RunConfig):
@@ -186,7 +198,7 @@ def create_app(config=None, output=None):
             remembered = profiles.load_secret(settings.profile)
             if remembered:
                 settings = settings.model_copy(update={"api_key": SecretStr(remembered)})
-        return start(settings)
+        return start(settings, state=load_state(settings.resume_from) if settings.resume_from else None)
 
     @app.post("/api/demo", dependencies=[Depends(auth)])
     async def demo():
@@ -194,6 +206,38 @@ def create_app(config=None, output=None):
             RunConfig(prompt="Demo: sculptural studio composition", model="demo/scripted", auto_approve=True),
             demo=True,
         )
+
+    @app.get("/api/runs/resumable", dependencies=[Depends(auth)])
+    async def resumable():
+        """Runs on disk that stopped before finishing, newest first.
+
+        Read from the filesystem rather than memory so a run survives an Astra
+        restart: the scene it built is still in Blender either way.
+        """
+        found = []
+        for directory in sorted(output.iterdir()) if output.is_dir() else []:
+            saved, manifest = directory / "state.json", directory / "manifest.json"
+            if not saved.is_file():
+                continue
+            try:
+                data = json.loads(saved.read_text(encoding="utf-8"))
+                status = json.loads(manifest.read_text(encoding="utf-8")).get("status")
+            except (OSError, ValueError):
+                continue
+            if status == "completed":
+                continue
+            found.append(
+                {
+                    "id": directory.name,
+                    "stage": data.get("stage"),
+                    "steps": data.get("steps", 0),
+                    "prompt": (data.get("prompt") or "")[:140],
+                    "status": status,
+                    "updated": saved.stat().st_mtime,
+                }
+            )
+        found.sort(key=lambda entry: entry["updated"], reverse=True)
+        return {"runs": found[:20]}
 
     @app.get("/api/runs/{run_id}", dependencies=[Depends(auth)])
     async def state(run_id: str, after: int = Query(default=0, ge=0)):

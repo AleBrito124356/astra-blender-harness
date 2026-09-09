@@ -52,10 +52,40 @@ class RunConfig(BaseModel):
     auto_approve: bool = False
     quality: Literal["draft", "studio", "final"] = "studio"
     screenshot_max_size: int = Field(default=1400, ge=256, le=2048)
-    max_steps: int = Field(default=24, ge=6, le=80)
+    # Budgets. Zero means no limit on that axis: the run then stops only when
+    # the model finishes, another budget bites, or you press Stop.
+    max_steps: int = Field(default=24, ge=0, le=2000)
     max_output_tokens: int = Field(default=4096, ge=512, le=16384)
-    max_total_tokens: int = Field(default=150000, ge=4096, le=1000000)
-    timeout_seconds: int = Field(default=1200, ge=30, le=3600)
+    max_total_tokens: int = Field(default=150000, ge=0, le=50_000_000)
+    timeout_seconds: int = Field(default=1200, ge=0, le=86400)
+    # Per-phase caps, previously hidden constants. Build defaulted to half of
+    # max_steps, which is what silently ended a run mid-scene.
+    build_max_steps: int = Field(default=0, ge=0, le=2000)
+    inspect_max_steps: int = Field(default=3, ge=1, le=200)
+    # Continue a previous run: its conversation is reloaded and the scene it
+    # already built is still in Blender.
+    resume_from: str | None = Field(default=None, max_length=64, pattern=r"^[0-9a-f]{32}$")
+
+    @field_validator("max_steps")
+    @classmethod
+    def sane_steps(cls, value):
+        if 0 < value < 6:
+            raise ValueError("Use 0 for no turn limit, or at least 6 turns")
+        return value
+
+    @field_validator("max_total_tokens")
+    @classmethod
+    def sane_tokens(cls, value):
+        if 0 < value < 4096:
+            raise ValueError("Use 0 for no token limit, or at least 4096 tokens")
+        return value
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def sane_timeout(cls, value):
+        if 0 < value < 30:
+            raise ValueError("Use 0 for no deadline, or at least 30 seconds")
+        return value
 
     @field_validator("api_base")
     @classmethod

@@ -40,6 +40,8 @@ Use **Demo** to explore the full workflow without a key or Blender. Demo evidenc
 - Optional visual feedback. Text-only models still receive scene information; humans can inspect saved viewport images.
 - Sequential Blender operations, approval queue, cancellation, deadlines, turn/token limits and no automatic mutation retries.
 - The run deadline pauses while an approval waits for you. Review time is yours, not the model's; the wait is reported separately as `awaiting_approval_seconds`.
+- Every budget is editable, and a budget of `0` removes that limit: turns, tokens and wall clock alike. The per-phase caps are settings too, not hidden constants; the build phase used to get half the total turns with no way to say otherwise.
+- Continue a run that stopped early. Its conversation is saved to `state.json` and the scene it built is still in Blender, so a resumed run picks up at the phase it left, re-inspects, and carries on with a fresh budget. Resumable runs are read from disk, so they survive restarting Astra.
 - Live activity, viewport gallery, downloadable manifests, trace and scene files. No fabricated success status when the run fails or exhausts its budget.
 - Runs saved to `./runs/<id>/`. The harness copies scenes rather than overwriting the original `.blend`.
 - Resizable viewport panel with an expand mode, and a configurable capture size. Note that `max_size` only downscales: the real resolution is the size of your 3D viewport area inside Blender.

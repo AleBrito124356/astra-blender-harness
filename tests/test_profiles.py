@@ -234,3 +234,69 @@ def test_discovery_endpoint_rejects_an_unsafe_base(store, tmp_path):
         )
         assert response.status_code == 400
         assert "HTTPS" in response.json()["detail"]
+
+
+def a_stopped_run(root, run_id="0" * 32, stage="build"):
+    directory = root / run_id
+    directory.mkdir(parents=True)
+    (directory / "state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "stage": stage,
+                "steps": 7,
+                "prompt": "Una casa sencilla",
+                "messages": [{"role": "user", "content": "earlier work"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (directory / "manifest.json").write_text(json.dumps({"status": "budget_exhausted"}), encoding="utf-8")
+    return run_id
+
+
+def test_resumable_lists_only_unfinished_runs(store, tmp_path):
+    a_stopped_run(tmp_path, "a" * 32)
+    finished = tmp_path / ("b" * 32)
+    finished.mkdir()
+    (finished / "state.json").write_text(json.dumps({"stage": "finalize"}), encoding="utf-8")
+    (finished / "manifest.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    with client_for(tmp_path) as client:
+        headers = {"X-Astra-Token": client.get("/api/session").json()["token"]}
+        listed = client.get("/api/runs/resumable", headers=headers).json()["runs"]
+    assert [entry["id"] for entry in listed] == ["a" * 32]
+    assert listed[0]["stage"] == "build"
+
+
+def test_a_run_resumes_from_the_saved_state(store, tmp_path, monkeypatch):
+    run_id = a_stopped_run(tmp_path)
+    seen = {}
+
+    async def fake_execute(run, config, provider=None, connector=None, state=None):
+        seen["state"] = state
+        run.status = "completed"
+
+    monkeypatch.setattr("astra_blender.server.execute", fake_execute)
+    with client_for(tmp_path) as client:
+        headers = {"X-Astra-Token": client.get("/api/session").json()["token"]}
+        started = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"prompt": "continue the house", "model": "openai/gpt-6-astra", "resume_from": run_id},
+        )
+        assert started.status_code == 200
+        for _ in range(50):
+            if (
+                client.get(f"/api/runs/{started.json()['id']}", headers=headers).json()["status"]
+                == "completed"
+            ):
+                break
+        # An id with no saved state is refused rather than silently starting over.
+        missing = client.post(
+            "/api/runs",
+            headers=headers,
+            json={"prompt": "continue the house", "resume_from": "f" * 32},
+        )
+        assert missing.status_code == 404
+    assert seen["state"]["stage"] == "build"
+    assert seen["state"]["messages"][0]["content"] == "earlier work"
