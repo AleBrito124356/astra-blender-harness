@@ -17,6 +17,9 @@ from .provider import LiteLLMProvider, parse_json_action
 # the comparisons and range() below stay ordinary integer arithmetic.
 UNCAPPED = 10**9
 
+# Shorter than this is not a credential worth matching against every string.
+MIN_SECRET_LENGTH = 8
+
 
 def budget(value):
     return UNCAPPED if not value else value
@@ -72,7 +75,10 @@ class Run:
     def clean(self, value):
         if isinstance(value, str):
             key = self.config.api_key.get_secret_value()
-            if key:
+            # Only redact something long enough to be a real credential: a one
+            # or two character value matches everywhere and would shred the
+            # trace, turning "execute_blender_code" into "e[REDACTED]ecute...".
+            if len(key) >= MIN_SECRET_LENGTH:
                 value = value.replace(key, "[REDACTED]")
             return re.sub(r"(?i)(bearer\s+)[\w.\-]+", r"\1[REDACTED]", value)
         if isinstance(value, dict):

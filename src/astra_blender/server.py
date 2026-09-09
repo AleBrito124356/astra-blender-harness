@@ -221,10 +221,13 @@ def create_app(config=None, output=None):
                 continue
             try:
                 data = json.loads(saved.read_text(encoding="utf-8"))
-                status = json.loads(manifest.read_text(encoding="utf-8")).get("status")
+                info = json.loads(manifest.read_text(encoding="utf-8"))
+                status, model = info.get("status"), info.get("model")
             except (OSError, ValueError):
                 continue
-            if status == "completed":
+            # A demo run has no real scene behind it, so continuing one against
+            # a live Blender would replay a simulated conversation.
+            if status == "completed" or model == "demo/scripted":
                 continue
             found.append(
                 {

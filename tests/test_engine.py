@@ -365,3 +365,34 @@ async def test_zero_budgets_mean_no_limit(tmp_path):
     await execute(run, MCPConfig(), Provider(), connector)
     assert run.status == "completed"
     assert run.deadline.when() is None
+
+
+async def test_redaction_does_not_shred_output_for_a_tiny_key(tmp_path):
+    # A one-character key matched every "x" in the trace and rewrote
+    # "execute_blender_code" as "e[REDACTED]ecute_blender_code".
+    session = Session()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    run = Run(RunConfig(prompt="Create a lamp", auto_approve=True, api_key="x"), tmp_path)
+    await execute(run, MCPConfig(), Provider(), connector)
+    trace = (run.directory / "events.jsonl").read_text(encoding="utf-8")
+    assert "execute_blender_code" in trace
+    assert "[REDACTED]" not in trace
+
+
+async def test_a_real_length_key_is_still_redacted(tmp_path):
+    session = Session()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    run = Run(RunConfig(prompt="Create a lamp", auto_approve=True, api_key="sk-long-enough-key"), tmp_path)
+    await execute(run, MCPConfig(), Provider(), connector)
+    run.emit("assistant", text="the key is sk-long-enough-key here")
+    trace = (run.directory / "events.jsonl").read_text(encoding="utf-8")
+    assert "sk-long-enough-key" not in trace
+    assert "[REDACTED]" in trace

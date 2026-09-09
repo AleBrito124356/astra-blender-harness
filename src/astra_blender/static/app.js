@@ -16,7 +16,11 @@ async function api(path, options={}){
   return response;
 }
 async function json(path,body,method){return (await api(path,body===undefined?{}:{method:method||'POST',body:JSON.stringify(body)})).json();}
-function busy(value){$('create').disabled=value;$('demo').disabled=value;$('connect').disabled=value;$('stop').hidden=!value;}
+function busy(value){$('create').disabled=value;$('demo').disabled=value;$('connect').disabled=value;$('stop').hidden=!value;if(value)$('continue').hidden=true;}
+function syncResumeLabel(){
+  const resuming=!!$('resume').value;
+  $('create').firstChild.textContent=resuming?'Continue in Blender ':'Create in Blender ';
+}
 
 /* ---------- model catalog ---------- */
 function group(name){return providers.find(p=>p.provider===name);}
@@ -208,7 +212,12 @@ async function poll(){
       polling=false;busy(false);
       document.querySelectorAll('.approval-actions button').forEach(button=>button.disabled=true);
       await loadFiles();await loadResumable();
-      if(data.status!=='completed')notice('Run '+data.status.replaceAll('_',' ')+'. Inspect the activity and Blender before starting again. Partial files remain available.');
+      const canContinue=!demoMode&&data.status!=='completed'&&[...$('resume').options].some(o=>o.value===runId);
+      $('continue').hidden=!canContinue;
+      if(data.status==='completed'){$('resume').value='';syncResumeLabel();}
+      else notice('Run '+data.status.replaceAll('_',' ')+'. '+(canContinue
+        ?'Your scene is still in Blender. Press Continue this run to carry on from where it stopped, raising the budgets first if you want it to get further.'
+        :'Inspect the activity and Blender before starting again. Partial files remain available.'));
     }
   }catch(error){notice('Connection interrupted: '+error.message+'. Retrying…');}
   if(polling)setTimeout(poll,800);
@@ -234,7 +243,9 @@ $('model').oninput=updateCaps;
 $('vision').onchange=()=>{$('vision').dataset.touched='1';};
 $('profile').onchange=()=>applyProfile($('profile').value);
 $('profile-save').onclick=saveProfile;
-$('resume-clear').onclick=()=>{$('resume').value='';};
+$('resume-clear').onclick=()=>{$('resume').value='';syncResumeLabel();};
+$('resume').onchange=syncResumeLabel;
+$('continue').onclick=()=>{$('resume').value=runId;syncResumeLabel();$('continue').hidden=true;start();};
 $('profile-delete').onclick=deleteProfile;
 $('expand').onclick=()=>{const on=document.body.classList.toggle('expanded');$('expand').textContent=on?'⤡':'⤢';$('expand').title=on?'Restore the viewport':'Expand the viewport';};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('expanded'))$('expand').click();});
