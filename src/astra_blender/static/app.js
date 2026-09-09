@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let token = '', runId = null, cursor = 0, polling = false, demoMode = false;
-let providers = [], savedProfiles = [], secretBackend = null, continueTarget = null;
+let providers = [], savedProfiles = [], secretBackend = null, continueTarget = null, resumableRuns = [];
 const objectUrls = [];
 const CUSTOM = '__custom__';
 const presets = {
@@ -12,6 +12,9 @@ const presets = {
 const LAST_RUN = 'astra.lastRun';
 function remember(id){try{id?localStorage.setItem(LAST_RUN,id):localStorage.removeItem(LAST_RUN);}catch{}}
 function remembered(){try{return localStorage.getItem(LAST_RUN);}catch{return null;}}
+const LAST_PROFILE = 'astra.lastProfile';
+function rememberProfile(name){try{name?localStorage.setItem(LAST_PROFILE,name):localStorage.removeItem(LAST_PROFILE);}catch{}}
+function rememberedProfile(){try{return localStorage.getItem(LAST_PROFILE);}catch{return null;}}
 function notice(text){$('notice').textContent=text;$('notice').hidden=!text;}
 async function api(path, options={}){
   const response=await fetch('/api'+path,{...options,headers:{'Content-Type':'application/json','X-Astra-Token':token,...options.headers}});
@@ -27,6 +30,15 @@ function offerContinue(id,label){
   continueTarget=id||null;
   $('continue').hidden=!continueTarget;
   if(continueTarget)$('continue').textContent=label;
+}
+function applyResume(id){
+  $('resume').value=id||'';
+  const entry=resumableRuns.find(r=>r.id===id);
+  // The brief is required and a reload empties it, so a continuation posted
+  // an empty prompt and was rejected before any run existed. Reuse the
+  // stopped run's own brief.
+  if(entry&&entry.prompt&&!$('prompt').value.trim())$('prompt').value=entry.prompt;
+  syncResumeLabel();
 }
 function syncResumeLabel(){
   const resuming=!!$('resume').value;
@@ -97,6 +109,7 @@ async function fetchModels(){
 async function loadResumable(){
   try{
     const data=await json('/runs/resumable',undefined,'GET');
+    resumableRuns=data.runs;
     const select=$('resume');select.replaceChildren();
     const blank=document.createElement('option');blank.value='';blank.textContent='— Start a new run —';select.append(blank);
     for(const entry of data.runs){
@@ -149,7 +162,7 @@ async function saveProfile(){
     const result=await json('/profiles',{name,provider:$('provider').value,model,
       api_base:$('api-base').value.trim()||null,tool_mode:$('tool-mode').value,vision:$('vision').checked,
       api_key:$('remember').checked?$('api-key').value:''},'PUT');
-    await loadProfiles(name);applyProfile(name);
+    await loadProfiles(name);applyProfile(name);rememberProfile(name);
     notice(result.remembered?'Saved “'+name+'” with its key in the OS keyring.':'Saved “'+name+'”. The key was not stored.');
   }catch(error){notice(error.message);}
 }
@@ -196,6 +209,10 @@ async function start(demo=false){
   try{
     const model=currentModel();
     if(!demo&&!model){notice('Choose a model first.');busy(false);return;}
+    if(!demo&&!$('api-key').value&&!$('profile').value){
+      notice('No API key. Paste one, or pick a saved setup that remembers it.');
+      busy(false);if(continueTarget)$('continue').hidden=false;return;
+    }
     const body={prompt:$('prompt').value,model,api_key:$('api-key').value,profile:$('profile').value||null,
       api_base:$('api-base').value.trim()||null,quality:$('quality').value,tool_mode:$('tool-mode').value,
       vision:$('vision').checked,auto_approve:$('auto').checked,max_steps:Number($('steps').value),
@@ -209,7 +226,7 @@ async function start(demo=false){
     $('viewport-label').textContent=demo?'OFFLINE DEMO · ILLUSTRATION':'BLENDER VIEWPORT';
     if(demo)notice('Demo mode: a scripted walkthrough with an illustration. No model API or Blender is connected, and no .blend file is created.');
     polling=true;await poll();
-  }catch(error){notice(error.message);busy(false);}
+  }catch(error){notice(error.message);busy(false);if(continueTarget)$('continue').hidden=false;}
 }
 async function imageFile(filename){
   const response=await api('/runs/'+runId+'/files/'+encodeURIComponent(filename));
@@ -247,7 +264,10 @@ async function poll(){
       document.querySelectorAll('.approval-actions button').forEach(button=>button.disabled=true);
       await loadFiles();await loadResumable();
       const canContinue=!demoMode&&data.status!=='completed'&&[...$('resume').options].some(o=>o.value===runId);
-      offerContinue(canContinue?runId:null,'↻ Continue this run');
+      // Fall back to the newest stopped run so a failed attempt does not
+      // strand the one that is still worth continuing.
+      const target=canContinue?runId:(resumableRuns[0]&&resumableRuns[0].id)||null;
+      offerContinue(target,target===runId?'↻ Continue this run':'↻ Continue last run');
       if(data.status==='completed'){$('resume').value='';syncResumeLabel();}
       else notice('Run '+data.status.replaceAll('_',' ')+'. '+(canContinue
         ?'Your scene is still in Blender. Press Continue this run to carry on from where it stopped, raising the budgets first if you want it to get further.'
@@ -275,11 +295,11 @@ $('model-select').onchange=syncCustom;
 $('model-fetch').onclick=fetchModels;
 $('model').oninput=updateCaps;
 $('vision').onchange=()=>{$('vision').dataset.touched='1';};
-$('profile').onchange=()=>applyProfile($('profile').value);
+$('profile').onchange=()=>{applyProfile($('profile').value);rememberProfile($('profile').value);};
 $('profile-save').onclick=saveProfile;
-$('resume-clear').onclick=()=>{$('resume').value='';syncResumeLabel();};
-$('resume').onchange=syncResumeLabel;
-$('continue').onclick=()=>{if(!continueTarget)return;$('resume').value=continueTarget;syncResumeLabel();$('continue').hidden=true;start();};
+$('resume-clear').onclick=()=>{applyResume('');};
+$('resume').onchange=()=>applyResume($('resume').value);
+$('continue').onclick=()=>{if(!continueTarget)return;applyResume(continueTarget);$('continue').hidden=true;start();};
 $('profile-delete').onclick=deleteProfile;
 $('expand').onclick=()=>{const on=document.body.classList.toggle('expanded');$('expand').textContent=on?'⤡':'⤢';$('expand').title=on?'Restore the viewport':'Expand the viewport';};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('expanded'))$('expand').click();});
@@ -293,7 +313,14 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
     const session=await (await fetch('/api/session')).json();token=session.token;
     const data=await json('/models',undefined,'GET');providers=data.providers;
     fillProviders();$('provider').value='openai';fillModels('openai');
+    // Reapply the setup last used, so a reload keeps working against the same
+    // provider with its remembered key instead of emptying the credentials.
     await loadProfiles('');
+    // Fall back to the only saved setup when nothing is remembered yet: with
+    // one setup there is nothing to guess, and leaving the key blank after a
+    // reload is what turned a continuation into a rejected request.
+    const chosen=rememberedProfile()||(savedProfiles.length===1?savedProfiles[0].name:'');
+    if(chosen&&savedProfiles.some(entry=>entry.name===chosen)){fillProfiles(chosen);applyProfile(chosen);}
     const stopped=await loadResumable();
     busy(false);
     // Restoring the previous run is what makes the reload safe to do at all.

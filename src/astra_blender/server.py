@@ -287,7 +287,9 @@ def create_app(config=None, output=None):
                     "id": directory.name,
                     "stage": data.get("stage"),
                     "steps": data.get("steps", 0),
-                    "prompt": (data.get("prompt") or "")[:140],
+                    # Full brief, not a display snippet: continuing reuses it,
+                    # and a truncated one would silently change the request.
+                    "prompt": (data.get("prompt") or "")[:16000],
                     "status": status,
                     "updated": saved.stat().st_mtime,
                 }
