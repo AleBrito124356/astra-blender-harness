@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let token = '', runId = null, cursor = 0, polling = false, demoMode = false;
-let providers = [], savedProfiles = [], secretBackend = null;
+let providers = [], savedProfiles = [], secretBackend = null, continueTarget = null;
 const objectUrls = [];
 const CUSTOM = '__custom__';
 const presets = {
@@ -17,6 +17,14 @@ async function api(path, options={}){
 }
 async function json(path,body,method){return (await api(path,body===undefined?{}:{method:method||'POST',body:JSON.stringify(body)})).json();}
 function busy(value){$('create').disabled=value;$('demo').disabled=value;$('connect').disabled=value;$('stop').hidden=!value;if(value)$('continue').hidden=true;}
+function offerContinue(id,label){
+  // Continuing has to be reachable without hunting: the button appears next to
+  // the activity both when a run ends and when the page opens on a run that
+  // stopped earlier, including after restarting Astra.
+  continueTarget=id||null;
+  $('continue').hidden=!continueTarget;
+  if(continueTarget)$('continue').textContent=label;
+}
 function syncResumeLabel(){
   const resuming=!!$('resume').value;
   $('create').firstChild.textContent=resuming?'Continue in Blender ':'Create in Blender ';
@@ -95,7 +103,8 @@ async function loadResumable(){
       select.append(option);
     }
     $('resume-box').hidden=!data.runs.length;
-  }catch{$('resume-box').hidden=true;}
+    return data.runs[0]||null;
+  }catch{$('resume-box').hidden=true;return null;}
 }
 
 /* ---------- saved setups ---------- */
@@ -213,7 +222,7 @@ async function poll(){
       document.querySelectorAll('.approval-actions button').forEach(button=>button.disabled=true);
       await loadFiles();await loadResumable();
       const canContinue=!demoMode&&data.status!=='completed'&&[...$('resume').options].some(o=>o.value===runId);
-      $('continue').hidden=!canContinue;
+      offerContinue(canContinue?runId:null,'↻ Continue this run');
       if(data.status==='completed'){$('resume').value='';syncResumeLabel();}
       else notice('Run '+data.status.replaceAll('_',' ')+'. '+(canContinue
         ?'Your scene is still in Blender. Press Continue this run to carry on from where it stopped, raising the budgets first if you want it to get further.'
@@ -245,7 +254,7 @@ $('profile').onchange=()=>applyProfile($('profile').value);
 $('profile-save').onclick=saveProfile;
 $('resume-clear').onclick=()=>{$('resume').value='';syncResumeLabel();};
 $('resume').onchange=syncResumeLabel;
-$('continue').onclick=()=>{$('resume').value=runId;syncResumeLabel();$('continue').hidden=true;start();};
+$('continue').onclick=()=>{if(!continueTarget)return;$('resume').value=continueTarget;syncResumeLabel();$('continue').hidden=true;start();};
 $('profile-delete').onclick=deleteProfile;
 $('expand').onclick=()=>{const on=document.body.classList.toggle('expanded');$('expand').textContent=on?'⤡':'⤢';$('expand').title=on?'Restore the viewport':'Expand the viewport';};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('expanded'))$('expand').click();});
@@ -260,7 +269,13 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
     const data=await json('/models',undefined,'GET');providers=data.providers;
     fillProviders();$('provider').value='openai';fillModels('openai');
     await loadProfiles('');
-    await loadResumable();
+    const stopped=await loadResumable();
     busy(false);
+    if(stopped){
+      offerContinue(stopped.id,'↻ Continue last run');
+      notice('A previous run stopped in '+stopped.stage+' after '+stopped.steps+
+        ' turns and its scene is still in Blender. Press Continue last run, beside Studio activity, '+
+        'to carry on — raise the budgets first if it ran out of them.');
+    }
   }catch{notice('Cannot reach the local Astra server. Start astra-blender serve and reload.');}
 })();
