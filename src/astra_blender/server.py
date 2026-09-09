@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +17,55 @@ from . import catalog, profiles
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig, validate_api_base
 from .engine import TERMINAL, Run, execute, result_parts
+
+RUN_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+class ArchivedRun:
+    """A run rebuilt from its own files.
+
+    Everything the studio shows lives in the browser's DOM, so a reload used to
+    throw the trace, the viewport gallery and the deliverables away even though
+    they were all still on disk. Reading them back means a refresh - or a
+    restart of Astra - costs nothing.
+    """
+
+    def __init__(self, run_id, directory):
+        self.id = run_id
+        self.directory = directory
+        self.approvals = {}
+        self.task = None
+        manifest = _read_json(directory / "manifest.json") or {}
+        self.status = manifest.get("status", "unknown")
+        self.steps = manifest.get("steps", 0)
+        self.total_tokens = manifest.get("total_tokens", 0)
+        self.events = []
+        try:
+            for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines():
+                try:
+                    self.events.append(json.loads(line))
+                except ValueError:
+                    continue
+        except OSError:
+            pass
+
+    def snapshot(self, after=0):
+        return {
+            "id": self.id,
+            "status": self.status,
+            "steps": self.steps,
+            "total_tokens": self.total_tokens,
+            "events": self.events[after:],
+            "cursor": len(self.events),
+            "archived": True,
+        }
+
+
+def _read_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def create_app(config=None, output=None):
@@ -66,9 +116,14 @@ def create_app(config=None, output=None):
             raise HTTPException(401, "Invalid session token")
 
     def get_run(run_id):
-        if run_id not in runs:
-            raise HTTPException(404, "Run not found in this process; previous files remain in runs/")
-        return runs[run_id]
+        if run_id in runs:
+            return runs[run_id]
+        # Fall back to the files on disk. The id shape is checked first, so this
+        # cannot be pointed outside the output directory.
+        directory = output / run_id
+        if RUN_ID.match(run_id) and (directory / "events.jsonl").is_file():
+            return ArchivedRun(run_id, directory)
+        raise HTTPException(404, "No run with that id in this process or in runs/")
 
     @app.get("/api/session")
     async def session():
@@ -219,12 +274,10 @@ def create_app(config=None, output=None):
             saved, manifest = directory / "state.json", directory / "manifest.json"
             if not saved.is_file():
                 continue
-            try:
-                data = json.loads(saved.read_text(encoding="utf-8"))
-                info = json.loads(manifest.read_text(encoding="utf-8"))
-                status, model = info.get("status"), info.get("model")
-            except (OSError, ValueError):
+            data, info = _read_json(saved), _read_json(manifest)
+            if data is None or info is None:
                 continue
+            status, model = info.get("status"), info.get("model")
             # A demo run has no real scene behind it, so continuing one against
             # a live Blender would replay a simulated conversation.
             if status == "completed" or model == "demo/scripted":

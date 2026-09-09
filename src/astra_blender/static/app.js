@@ -9,6 +9,9 @@ const presets = {
   room:'Create an isometric reading nook: walnut shelving, a comfortable moss-green chair, an arched window and a paper floor lamp. Late-afternoon light, believable scale, intentional small details and a quiet editorial composition. Use a new ASTRA collection and set a camera.',
   abstract:'Create an original abstract sculpture with interlocking brushed-copper rings on a charcoal stone plinth. A clear silhouette, tactile materials and warm key/cool fill lighting. Build in a new ASTRA collection, frame with an 85mm camera and prepare a modest preview render.'
 };
+const LAST_RUN = 'astra.lastRun';
+function remember(id){try{id?localStorage.setItem(LAST_RUN,id):localStorage.removeItem(LAST_RUN);}catch{}}
+function remembered(){try{return localStorage.getItem(LAST_RUN);}catch{return null;}}
 function notice(text){$('notice').textContent=text;$('notice').hidden=!text;}
 async function api(path, options={}){
   const response=await fetch('/api'+path,{...options,headers:{'Content-Type':'application/json','X-Astra-Token':token,...options.headers}});
@@ -159,6 +162,28 @@ async function deleteProfile(){
 }
 
 /* ---------- runs ---------- */
+async function reattach(id){
+  // Replay a run the browser forgot. Events, images and files all come from
+  // the server, so a refresh mid-run keeps the trace and the approval buttons.
+  let data;
+  try{data=await json('/runs/'+id+'?after=0',undefined,'GET');}
+  catch{remember(null);return false;}
+  runId=id;demoMode=false;reset();
+  for(const event of data.events){
+    addEvent(event);
+    if(event.type==='phase')document.querySelectorAll('[data-phase]').forEach(el=>el.classList.toggle('active',el.dataset.phase===event.phase));
+    if(event.type==='image'){try{await imageFile(event.file);}catch{}}
+  }
+  cursor=data.cursor;
+  $('status').textContent=data.status.replaceAll('_',' ').toUpperCase();
+  $('usage').textContent=data.steps+' turns · '+data.total_tokens.toLocaleString()+' tokens';
+  $('viewport-label').textContent='BLENDER VIEWPORT';
+  await loadFiles();
+  const live=!['completed','failed','cancelled','budget_exhausted'].includes(data.status);
+  if(live){busy(true);polling=true;notice('Reattached to the run still in progress. Approvals below are live.');poll();}
+  else{document.querySelectorAll('.approval-actions button').forEach(button=>button.disabled=true);}
+  return live;
+}
 function reset(){
   for(const url of objectUrls)URL.revokeObjectURL(url);objectUrls.length=0;
   cursor=0;$('activity').replaceChildren();$('gallery').replaceChildren();$('files').replaceChildren();
@@ -180,7 +205,7 @@ async function start(demo=false){
     if(!demo&&!body.max_steps&&!body.max_total_tokens&&!body.timeout_seconds)
       notice('No turn, token or time limit is set. Only Stop will end this run.');
     const data=await json(demo?'/demo':'/runs',demo?{}:body);
-    runId=data.id;reset();$('status').textContent=demo?'DEMO · SIMULATED':'CONNECTING';
+    runId=data.id;remember(runId);reset();$('status').textContent=demo?'DEMO · SIMULATED':'CONNECTING';
     $('viewport-label').textContent=demo?'OFFLINE DEMO · ILLUSTRATION':'BLENDER VIEWPORT';
     if(demo)notice('Demo mode: a scripted walkthrough with an illustration. No model API or Blender is connected, and no .blend file is created.');
     polling=true;await poll();
@@ -271,6 +296,10 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
     await loadProfiles('');
     const stopped=await loadResumable();
     busy(false);
+    const previous=remembered();
+    // Restoring the previous run is what makes the reload safe to do at all.
+    const live=previous?await reattach(previous):false;
+    if(live)return;
     if(stopped){
       offerContinue(stopped.id,'↻ Continue last run');
       notice('A previous run stopped in '+stopped.stage+' after '+stopped.steps+

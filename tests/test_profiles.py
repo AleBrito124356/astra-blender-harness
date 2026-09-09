@@ -300,3 +300,48 @@ def test_a_run_resumes_from_the_saved_state(store, tmp_path, monkeypatch):
         assert missing.status_code == 404
     assert seen["state"]["stage"] == "build"
     assert seen["state"]["messages"][0]["content"] == "earlier work"
+
+
+def test_a_past_run_is_served_from_disk(store, tmp_path):
+    # A page reload used to lose the whole trace even though every event, image
+    # and file was still on disk.
+    run_id = "c" * 32
+    directory = tmp_path / run_id
+    directory.mkdir()
+    (directory / "events.jsonl").write_text(
+        '{"index":0,"type":"phase","phase":"build"}\n{"index":1,"type":"completed","message":"done"}\n',
+        encoding="utf-8",
+    )
+    (directory / "manifest.json").write_text(
+        json.dumps({"status": "completed", "steps": 4, "total_tokens": 99}), encoding="utf-8"
+    )
+    (directory / "viewport-001.png").write_bytes(b"not really a png")
+
+    with client_for(tmp_path) as client:
+        headers = {"X-Astra-Token": client.get("/api/session").json()["token"]}
+        snapshot = client.get(f"/api/runs/{run_id}", headers=headers).json()
+        assert snapshot["archived"] is True
+        assert snapshot["status"] == "completed"
+        assert snapshot["steps"] == 4 and snapshot["total_tokens"] == 99
+        assert [event["type"] for event in snapshot["events"]] == ["phase", "completed"]
+
+        files = client.get(f"/api/runs/{run_id}/files", headers=headers).json()["files"]
+        assert "viewport-001.png" in files
+        assert client.get(f"/api/runs/{run_id}/files/viewport-001.png", headers=headers).status_code == 200
+
+        # A malformed id never reaches the filesystem.
+        assert client.get("/api/runs/not-a-run-id", headers=headers).status_code == 404
+        assert client.get("/api/runs/" + "d" * 32, headers=headers).status_code == 404
+
+
+def test_an_archived_runs_approvals_are_not_pending(store, tmp_path):
+    run_id = "e" * 32
+    directory = tmp_path / run_id
+    directory.mkdir()
+    (directory / "events.jsonl").write_text('{"index":0,"type":"approval"}\n', encoding="utf-8")
+    with client_for(tmp_path) as client:
+        headers = {"X-Astra-Token": client.get("/api/session").json()["token"]}
+        response = client.post(
+            f"/api/runs/{run_id}/approvals/{'0' * 32}", headers=headers, json={"approved": True}
+        )
+        assert response.status_code == 409
