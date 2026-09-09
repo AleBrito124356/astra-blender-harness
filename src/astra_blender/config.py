@@ -4,6 +4,20 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
+def validate_api_base(value):
+    """Reject credentialed, non-loopback-plaintext or query-bearing API bases."""
+    if not value:
+        return None
+    url = urlparse(value)
+    if url.username or url.password or url.query or url.fragment or not url.hostname:
+        raise ValueError("Use an API base URL without credentials, query or fragment")
+    if url.scheme != "https" and not (
+        url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1", "::1"}
+    ):
+        raise ValueError("Remote API endpoints require HTTPS; HTTP is allowed only on loopback")
+    return value.rstrip("/")
+
+
 class MCPConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     transport: Literal["stdio", "http"] = "stdio"
@@ -46,13 +60,4 @@ class RunConfig(BaseModel):
     @field_validator("api_base")
     @classmethod
     def validate_base(cls, value):
-        if not value:
-            return None
-        url = urlparse(value)
-        if url.username or url.password or url.query or url.fragment or not url.hostname:
-            raise ValueError("Use an API base URL without credentials, query or fragment")
-        if url.scheme != "https" and not (
-            url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1", "::1"}
-        ):
-            raise ValueError("Remote API endpoints require HTTPS; HTTP is allowed only on loopback")
-        return value.rstrip("/")
+        return validate_api_base(value)

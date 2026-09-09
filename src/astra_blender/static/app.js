@@ -49,6 +49,10 @@ function findModel(identifier){for(const entry of providers)for(const model of e
 function updateCaps(){
   const model=findModel(currentModel()),caps=$('model-caps');
   if(!model){caps.hidden=true;return;}
+  if(model.live&&!model.tools&&!model.vision&&!model.context){
+    caps.textContent='Listed by your provider · LiteLLM knows no capabilities for it, so set Vision and Tool protocol yourself';
+    caps.className='caps warn';caps.hidden=false;return;
+  }
   const context=model.context?Math.round(model.context/1000)+'k context':'context unknown';
   caps.textContent=`${model.tools?'✓ tool calling':'⚠ no tool calling'} · ${model.vision?'✓ vision':'✗ text only'} · ${context}`;
   caps.className='caps'+(model.tools?'':' warn');caps.hidden=false;
@@ -57,6 +61,22 @@ function updateCaps(){
   if(!model.vision&&$('vision').checked){$('vision').checked=false;notice('Vision turned off: '+model.id+' is text only. Viewport images are still saved for you to inspect.');}
   if(model.vision&&!$('vision').checked&&!$('vision').dataset.touched)$('vision').checked=true;
   if(!model.tools&&$('tool-mode').value==='native'){$('tool-mode').value='json';notice('Tool protocol switched to JSON actions: '+model.id+' has no native tool calling.');}
+}
+
+async function fetchModels(){
+  const provider=$('provider').value;
+  $('model-fetch').disabled=true;notice('Asking the provider which models it serves…');
+  try{
+    const data=await json('/models/discover',{provider,api_base:$('api-base').value.trim()||null,
+      api_key:$('api-key').value,profile:$('profile').value||null});
+    const entry=group(provider)||{provider,label:provider,models:[]};
+    entry.models=data.models;
+    if(!group(provider))providers.push(entry);
+    const keep=currentModel();
+    fillModels(provider,data.models.some(m=>m.id===keep)?keep:undefined);
+    notice(data.models.length+' models from your provider. Identifiers are ready to use as they are.');
+  }catch(error){notice(error.message);}
+  finally{$('model-fetch').disabled=false;}
 }
 
 /* ---------- saved setups ---------- */
@@ -143,7 +163,7 @@ async function imageFile(filename){
   const image=document.createElement('img');image.src=url;image.alt=filename;button.append(image);button.onclick=show;$('gallery').append(button);
 }
 function addEvent(event){
-  if(['usage','image','decision'].includes(event.type))return;
+  if(['usage','image','decision','deadline'].includes(event.type))return;
   const item=document.createElement('div');item.className='event';
   if(['failed','budget_exhausted','denied'].includes(event.type)||event.is_error)item.classList.add('error');
   const tag=document.createElement('span');tag.className='event-tag';tag.textContent=event.type.replaceAll('_',' ')+(event.tool?' / '+event.tool:'');item.append(tag);
@@ -191,6 +211,7 @@ $('provider').onchange=()=>{
   if(provider==='ollama_chat')$('vision').checked=false;
 };
 $('model-select').onchange=syncCustom;
+$('model-fetch').onclick=fetchModels;
 $('model').oninput=updateCaps;
 $('vision').onchange=()=>{$('vision').dataset.touched='1';};
 $('profile').onchange=()=>applyProfile($('profile').value);

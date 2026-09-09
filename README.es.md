@@ -6,7 +6,7 @@ Un estudio local para conectar modelos de IA al MCP de Blender con tu propia API
 
 Necesitas Python 3.11+, Blender con el add-on Blender MCP activo y uv para ejecutar el servidor predeterminado.
 
-El modelo se elige de una lista construida desde el catálogo de LiteLLM instalado, que marca qué modelos admiten llamadas a herramientas y visión. Escribir un nombre comercial en vez del identificador (`deepseek/deepseek-v4-pro`, no `Deepseek V4 Pro`) es la causa habitual de que una ejecución falle en el primer turno.
+El modelo se elige de una lista construida desde el catálogo de LiteLLM instalado, que marca qué modelos admiten llamadas a herramientas y visión. Escribir un nombre comercial en vez del identificador (`deepseek/deepseek-v4-pro`, no `Deepseek V4 Pro`) es la causa habitual de que una ejecución falle en el primer turno. Con el botón **↻** se pregunta al propio proveedor qué modelos sirve y se rellena la lista con identificadores ya listos, lo que resuelve el caso de pasarelas como NVIDIA NIM, cuyos IDs (`deepseek-ai/deepseek-v4-pro-0813`) ningún catálogo estático mantiene.
 
 ```sh
 python -m venv .venv
@@ -18,7 +18,7 @@ astra-blender serve
 
 Abre http://127.0.0.1:8765, selecciona proveedor/modelo, introduce tu API y comprueba la conexión con Blender. Usa Demo para explorar sin API ni Blender. El modo demo muestra una ilustración y nunca genera un .blend.
 
-La clave se mantiene en memoria por defecto. Si guardas una configuración, sus datos no secretos (proveedor, modelo, URL base) van a un archivo local y la clave va al llavero del sistema operativo, nunca a ese archivo. Los prompts y las capturas habilitadas se envían al proveedor elegido. Por defecto se pide aprobar las operaciones que modifican Blender; puedes autorizar la ejecución automática para la sesión.
+La clave se mantiene en memoria por defecto. Si guardas una configuración, sus datos no secretos (proveedor, modelo, URL base) van a un archivo local y la clave va al llavero del sistema operativo, nunca a ese archivo. Los prompts y las capturas habilitadas se envían al proveedor elegido. Por defecto se pide aprobar las operaciones que modifican Blender; puedes autorizar la ejecución automática para la sesión. El plazo de la ejecución se pausa mientras una aprobación te espera: el tiempo que tardas en revisar no se le descuenta al modelo.
 
 Se incluyen recomendaciones para OpenAI, Claude, Gemini y modelos locales en el [README principal](README.md). La compatibilidad depende del protocolo y las capacidades del modelo. Los modelos sin llamadas a herramientas pueden usar acciones JSON; los modelos sin visión reciben información textual de la escena.
 

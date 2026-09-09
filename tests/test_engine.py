@@ -8,7 +8,7 @@ from mcp.types import CallToolResult, TextContent
 
 from astra_blender.config import MCPConfig, RunConfig
 from astra_blender.demo import DemoSession
-from astra_blender.engine import Run, execute
+from astra_blender.engine import TERMINAL, Run, execute
 from astra_blender.provider import parse_json_action
 
 
@@ -192,3 +192,43 @@ def test_fenced_json():
         "get_scene_info",
         {},
     )
+
+
+async def test_a_slow_approval_does_not_spend_the_run_deadline(tmp_path):
+    # A run once died with TimeoutError after sitting 16 minutes on an unread
+    # approval: human review time was being charged to the model's wall clock.
+    session = Session()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    run = Run(RunConfig(prompt="Create a lamp", timeout_seconds=30), tmp_path)
+
+    async def answer(slow_once=[True]):
+        while run.deadline is None:
+            await asyncio.sleep(0)
+        # A full run needs about two seconds of real work here. Leave four,
+        # then take five to answer the first approval: without the pause the
+        # deadline fires mid-review, which is exactly the reported failure.
+        run.deadline.reschedule(asyncio.get_running_loop().time() + 4)
+        while run.status not in TERMINAL:
+            for future in list(run.approvals.values()):
+                if future.done():
+                    continue
+                if slow_once[0]:
+                    await asyncio.sleep(5)
+                    slow_once[0] = False
+                future.set_result(True)
+            await asyncio.sleep(0.01)
+
+    helper = asyncio.create_task(answer())
+    await execute(run, MCPConfig(), Provider(), connector)
+    helper.cancel()
+
+    assert run.status == "completed"
+    assert run.waited_for_approval >= 5
+    assert any(event["type"] == "deadline" for event in run.events)
+    manifest = json.loads((run.directory / "manifest.json").read_text())
+    # The wait is reported rather than buried inside elapsed_seconds.
+    assert manifest["awaiting_approval_seconds"] >= 5

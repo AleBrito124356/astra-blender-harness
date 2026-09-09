@@ -13,7 +13,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import catalog, profiles
 from .bridge import connect, discover
-from .config import MCPConfig, RunConfig
+from .config import MCPConfig, RunConfig, validate_api_base
 from .engine import TERMINAL, Run, execute, result_parts
 
 
@@ -101,6 +101,33 @@ def create_app(config=None, output=None):
         # Read from the installed LiteLLM catalog rather than a hand-kept list,
         # so a wrong identifier fails in the picker instead of mid-run.
         return {"providers": await asyncio.to_thread(catalog.models)}
+
+    class Discovery(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        provider: str = PydField(default="custom", max_length=40)
+        api_base: str | None = PydField(default=None, max_length=300)
+        api_key: SecretStr = SecretStr("")
+        profile: str | None = PydField(default=None, max_length=40)
+
+    @app.post("/api/models/discover", dependencies=[Depends(auth)])
+    async def discover_models(body: Discovery):
+        # Ask the provider what it actually serves. Same URL rules as a run, so
+        # this cannot be pointed at an arbitrary internal host.
+        try:
+            base = validate_api_base(body.api_base)
+        except ValueError as error:
+            raise HTTPException(400, str(error))
+        key = body.api_key.get_secret_value()
+        if not key and body.profile:
+            key = profiles.load_secret(body.profile) or ""
+        try:
+            found = await catalog.discover(body.provider, base, key)
+        except ValueError as error:
+            raise HTTPException(400, str(error))
+        except Exception:
+            # Never surface a client exception body: it can echo the key.
+            raise HTTPException(502, "Model discovery failed. Check the API base URL and key.")
+        return {"models": found}
 
     @app.get("/api/profiles", dependencies=[Depends(auth)])
     async def list_profiles():

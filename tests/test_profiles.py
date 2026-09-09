@@ -158,3 +158,79 @@ def test_run_resolves_the_remembered_key_server_side(store, tmp_path, monkeypatc
             if client.get(f"/api/runs/{run_id}", headers=headers).json()["status"] == "completed":
                 break
     assert seen["key"] == SECRET
+
+
+def test_routable_identifiers_for_any_provider():
+    # A gateway model ID carries its own slashes; the provider prefix goes in
+    # front of the whole thing, which is what LiteLLM routes on.
+    assert catalog.routable("nvidia_nim", "deepseek-ai/deepseek-v4-pro-0813") == (
+        "nvidia_nim/deepseek-ai/deepseek-v4-pro-0813"
+    )
+    # An unknown provider is reached through the OpenAI-compatible route.
+    assert catalog.routable("custom", "my-local-model") == "openai/my-local-model"
+
+
+class FakeResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("not json")
+        return self._payload
+
+
+def fake_client(response):
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, headers=None):
+            Client.seen = {"url": url, "headers": headers or {}}
+            return response
+
+    return Client
+
+
+async def test_discovery_prefixes_what_the_provider_lists(monkeypatch):
+    import httpx
+
+    payload = {"data": [{"id": "deepseek-ai/deepseek-v4-pro-0813"}, {"id": "meta/llama-3.3-70b"}]}
+    client = fake_client(FakeResponse(200, payload))
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    found = await catalog.discover("nvidia_nim", None, "nvapi-test")
+    assert [m["id"] for m in found] == [
+        "nvidia_nim/deepseek-ai/deepseek-v4-pro-0813",
+        "nvidia_nim/meta/llama-3.3-70b",
+    ]
+    assert found[0]["raw"] == "deepseek-ai/deepseek-v4-pro-0813"
+    # The default base is used when none is supplied, with a bearer token.
+    assert client.seen["url"] == "https://integrate.api.nvidia.com/v1/models"
+    assert client.seen["headers"]["Authorization"] == "Bearer nvapi-test"
+
+
+async def test_discovery_reports_a_rejected_key_without_echoing_it(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client(FakeResponse(401, {})))
+    with pytest.raises(ValueError, match="rejected the key"):
+        await catalog.discover("nvidia_nim", None, "nvapi-secret-value")
+
+
+def test_discovery_endpoint_rejects_an_unsafe_base(store, tmp_path):
+    with client_for(tmp_path) as client:
+        headers = {"X-Astra-Token": client.get("/api/session").json()["token"]}
+        response = client.post(
+            "/api/models/discover",
+            headers=headers,
+            json={"provider": "custom", "api_base": "http://169.254.169.254/latest"},
+        )
+        assert response.status_code == 400
+        assert "HTTPS" in response.json()["detail"]

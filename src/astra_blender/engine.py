@@ -34,6 +34,9 @@ class Run:
         self.steps = 0
         self.total_tokens = 0
         self.created_at = time.time()
+        # Set by execute(); lets a human approval pause the run deadline.
+        self.deadline = None
+        self.waited_for_approval = 0.0
 
     def clean(self, value):
         if isinstance(value, str):
@@ -71,11 +74,26 @@ class Run:
         self.approvals[approval_id] = future
         self.emit("approval", approval_id=approval_id, tool=name, arguments=arguments)
         self.status = "awaiting_approval"
+        # Human review time is not the model's time. Suspend the deadline for as
+        # long as the operation sits unanswered, then restore it shifted by the
+        # wait. Compensating afterwards would be too late: the timeout fires
+        # while the person is still reading, which is how a healthy run once
+        # died 16 minutes into an unread approval.
+        resume_at = self.deadline.when() if self.deadline is not None else None
+        if resume_at is not None:
+            self.deadline.reschedule(None)
+        started = time.monotonic()
         try:
             return await future
         finally:
             self.approvals.pop(approval_id, None)
             self.status = "running"
+            waited = time.monotonic() - started
+            self.waited_for_approval += waited
+            if resume_at is not None:
+                self.deadline.reschedule(resume_at + waited)
+                # Filtered out of the activity feed, kept in events.jsonl.
+                self.emit("deadline", waited_seconds=round(waited, 1))
 
 
 def result_parts(result):
@@ -103,7 +121,8 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
         output_dir=str(run.directory),
     )
     try:
-        async with asyncio.timeout(run.config.timeout_seconds):
+        async with asyncio.timeout(run.config.timeout_seconds) as deadline:
+            run.deadline = deadline
             async with connector(mcp_config) as session:
                 tools = await discover(session, mcp_config.allowed_tools)
                 run.emit("connected", tools=list(tools))
@@ -137,6 +156,7 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
             "steps": run.steps,
             "total_tokens": run.total_tokens,
             "elapsed_seconds": round(time.time() - run.created_at, 2),
+            "awaiting_approval_seconds": round(run.waited_for_approval, 2),
             "files": sorted(p.name for p in run.directory.iterdir() if p.is_file()),
         }
         (run.directory / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
