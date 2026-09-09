@@ -296,8 +296,11 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
     await loadProfiles('');
     const stopped=await loadResumable();
     busy(false);
-    const previous=remembered();
     // Restoring the previous run is what makes the reload safe to do at all.
+    // With nothing remembered - a first visit, cleared storage, or a page that
+    // predates this - fall back to the stopped run we are about to offer, so
+    // its trace is on screen next to the button that continues it.
+    const previous=remembered()||(stopped&&stopped.id);
     const live=previous?await reattach(previous):false;
     if(live)return;
     if(stopped){
