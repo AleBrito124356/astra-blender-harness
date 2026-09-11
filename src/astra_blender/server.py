@@ -138,7 +138,7 @@ def create_app(config=None, output=None):
             "token": token,
             "transport": config.transport,
             "version": __version__,
-            "features": ["live_scene", "references", "animation"],
+            "features": ["live_scene", "references", "animation", "motion_bake"],
         }
 
     @app.post("/api/references", dependencies=[Depends(auth)])
@@ -187,6 +187,22 @@ def create_app(config=None, output=None):
                     422, "Blender could not set that frame. Check the scene range and connection."
                 )
             return await live_scene.fresh()
+
+    class BakeRequest(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        step: int = PydField(default=1, ge=1, le=48)
+
+    @app.post("/api/scene/bake", dependencies=[Depends(auth)])
+    async def bake_motion(body: BakeRequest):
+        # Not gated on the run lock: the hub serializes this read behind the
+        # model's operations, and it never moves the playhead, so a person can
+        # watch the motion while the model keeps working.
+        try:
+            return await live_scene.bake(body.step)
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+        except Exception:
+            raise HTTPException(503, "Could not bake the motion. Check Blender and the MCP connection.")
 
     @app.post("/api/doctor", dependencies=[Depends(auth)])
     async def doctor():

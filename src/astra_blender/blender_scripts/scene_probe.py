@@ -1,5 +1,6 @@
 """Trusted read-only bpy probe. Executed inside Blender, never imported by the server."""
 
+import hashlib
 import math
 
 import bpy
@@ -42,16 +43,51 @@ def _material(mat):
     return data
 
 
+def astra_action_curves(obj):
+    """F-curves of the object's action, including Blender 4.4+ layered actions."""
+    data = obj.animation_data
+    if not data or not data.action:
+        return []
+    action = data.action
+    if hasattr(action, "layers") and action.layers:
+        curves, slot = [], data.action_slot
+        if slot:
+            for layer in action.layers:
+                for strip in layer.strips:
+                    if strip.type == "KEYFRAME":
+                        bag = strip.channelbag(slot)
+                        if bag:
+                            curves.extend(list(bag.fcurves))
+        return curves
+    return list(action.fcurves) if hasattr(action, "fcurves") else []
+
+
+def astra_animation_fingerprint(animated):
+    digest = hashlib.sha1()
+    for obj in animated:
+        digest.update(obj.name.encode())
+        for curve in astra_action_curves(obj):
+            digest.update(f"{curve.data_path}[{curve.array_index}]".encode())
+            for point in curve.keyframe_points:
+                digest.update(f"{point.co.x:.3f}:{point.co.y:.5f}:{point.interpolation}".encode())
+    return digest.hexdigest()[:16] if animated else ""
+
+
 def astra_scene_probe(geometry=False):
     scene = bpy.context.scene
     depsgraph = bpy.context.evaluated_depsgraph_get()
     camera = scene.camera
     objects, meshes, warnings = [], [], []
     vertex_budget, triangle_budget = 45000, 60000
+    occurrences = {}
     for index, instance in enumerate(depsgraph.object_instances):
         obj = instance.object
         if obj.hide_render or obj.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META"}:
             continue
+        # Same key the motion bake uses, so baked tracks find their meshes:
+        # the object name, then name#2, name#3 for further instances.
+        occurrences[obj.name] = occurrences.get(obj.name, 0) + 1
+        key = obj.name if occurrences[obj.name] == 1 else f"{obj.name}#{occurrences[obj.name]}"
         if len(objects) >= 250:
             warnings.append("Scene preview limited to 250 visible objects/instances.")
             break
@@ -63,6 +99,7 @@ def astra_scene_probe(geometry=False):
         dimensions = [high[i] - low[i] for i in range(3)]
         record = {
             "id": str(index) + ":" + obj.name,
+            "key": key,
             "name": obj.name,
             "type": obj.type,
             "parent": obj.original.parent.name if obj.original.parent else None,
@@ -150,6 +187,7 @@ def astra_scene_probe(geometry=False):
             "clip": [camera.data.clip_start, camera.data.clip_end],
             "view_frame": [_numbers(v) for v in camera.data.view_frame(scene=scene)],
         }
+    animated = [o for o in scene.objects if o.animation_data and o.animation_data.action]
     sockets = []
     for mat in bpy.data.materials:
         if mat.use_nodes:
@@ -166,9 +204,9 @@ def astra_scene_probe(geometry=False):
             "start": scene.frame_start,
             "end": scene.frame_end,
             "fps": scene.render.fps / scene.render.fps_base,
-            "animated_objects": [
-                o.name for o in scene.objects if o.animation_data and o.animation_data.action
-            ],
+            "animated_objects": [o.name for o in animated],
+            # Changes whenever keyframes change, so a baked preview knows it is stale.
+            "fingerprint": astra_animation_fingerprint(animated),
         },
         "blender_version": bpy.app.version_string,
         "objects": objects,

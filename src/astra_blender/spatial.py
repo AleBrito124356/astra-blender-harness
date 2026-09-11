@@ -45,6 +45,18 @@ def frame_code(arguments):
     )
 
 
+def bake_code(arguments):
+    """Bake world matrices of every moving object across the scene frame range."""
+    return (
+        (SCRIPTS / "motion_bake.py").read_text(encoding="utf-8")
+        + "\nimport json\nprint("
+        + repr(MARKER)
+        + " + json.dumps(astra_motion_bake(step="
+        + repr(int(arguments.get("step", 1)))
+        + "), allow_nan=False))"
+    )
+
+
 MOTION_FUNCTIONS = {
     "astra_assemble_parts": ("assembly.py", "astra_assemble"),
     "astra_place_on_ground": ("assembly.py", "astra_ground"),

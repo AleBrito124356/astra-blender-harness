@@ -7,7 +7,7 @@ import time
 from contextlib import asynccontextmanager
 
 from .bridge import connect
-from .spatial import diagnostics, parse_probe, probe_code
+from .spatial import bake_code, diagnostics, parse_probe, probe_code
 
 
 class BlenderHub:
@@ -124,6 +124,17 @@ class LiveScene:
             if self.snapshot and self.revision != revision
             else None,
         }
+
+    async def bake(self, step=1):
+        """One read for the whole animation, so playback never asks Blender again."""
+        result = await self.hub.call_tool(
+            "execute_blender_code",
+            {
+                "code": bake_code({"step": step}),
+                "user_prompt": "Bake evaluated motion for the local timeline preview in Astra.",
+            },
+        )
+        return parse_probe(result)
 
     async def fresh(self):
         if self.refresh_task and not self.refresh_task.done():
