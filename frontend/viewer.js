@@ -163,13 +163,24 @@ export function mountViewer({api,timeline=false}) {
   }
   function rebuild(data) {
     snapshot=data;
-    while(root.children.length){const obj=root.children[0];root.remove(obj);freeObject(obj);}
-    objects=new Map();
+    // Reuse a node whose geometry hash is unchanged: only its matrix moves.
+    // Re-uploading every buffer on each poll was the browser's share of the
+    // cost of live sync; Blender's share is skipped by the probe itself.
+    const kept=new Map();
     for(const item of data.meshes) {
-      const node=item.proxy?proxyNode(item):meshNode(item);
+      const key=keyOf(item), existing=objects.get(key);
+      let node;
+      if(existing&&item.hash&&existing.item.hash===item.hash&&!!existing.item.proxy===!!item.proxy){
+        node=existing.node;node.matrix.fromArray(matrixOf(item));
+      }else{
+        if(existing){root.remove(existing.node);freeObject(existing.node);}
+        node=item.proxy?proxyNode(item):meshNode(item);root.add(node);
+      }
       node.userData.record=item;node.userData.rest=node.matrix.clone();
-      root.add(node);objects.set(keyOf(item),{node,item});
+      kept.set(key,{node,item});
     }
+    for(const [key,{node}] of objects)if(!kept.has(key)){root.remove(node);freeObject(node);}
+    objects=kept;
     if(data.camera && ['PERSP','ORTHO'].includes(data.camera.type)){
       const cam=data.camera,aspect=data.render.resolution[0]/data.render.resolution[1]*
         (data.render.pixel_aspect?.[0]||1)/(data.render.pixel_aspect?.[1]||1);

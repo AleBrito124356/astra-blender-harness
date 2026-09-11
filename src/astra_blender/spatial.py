@@ -13,7 +13,9 @@ SCRIPTS = Path(__file__).parent / "blender_scripts"
 MARKER = "ASTRA_SCENE_JSON:"
 
 
-def probe_code(geometry=False):
+def probe_code(geometry=False, known=None):
+    """The read-only scene probe. `known` lists geometry hashes already held, so
+    Blender serializes only meshes that changed."""
     return (
         (SCRIPTS / "projection.py").read_text(encoding="utf-8")
         + "\n"
@@ -22,10 +24,48 @@ def probe_code(geometry=False):
             "\nimport json\nprint("
             + repr(MARKER)
             + " + json.dumps(astra_scene_probe("
-            + repr(geometry)
+            + repr(bool(geometry))
+            + ", known="
+            + repr(dict(known or {}))
             + "), allow_nan=False))"
         )
     )
+
+
+def known_hashes(snapshot):
+    """Instance key -> geometry hash for every mesh a snapshot already carries."""
+    if not snapshot:
+        return {}
+    return {
+        entry.get("key") or entry["name"]: entry["hash"]
+        for entry in snapshot.get("meshes", [])
+        if entry.get("hash")
+    }
+
+
+GEOMETRY_FIELDS = ("positions", "triangles", "normals", "material_indices", "proxy")
+
+
+def merge_unchanged(snapshot, previous):
+    """Fill meshes the probe reported as unchanged from the previous snapshot.
+
+    The result is always a complete snapshot, so diagnostics, the viewer and
+    the tests never see a partial one. A mesh the server no longer holds - it
+    should not happen, but a restart mid-refresh could - falls back to a
+    bounding-box proxy rather than a broken entry.
+    """
+    held = {entry.get("key") or entry["name"]: entry for entry in (previous or {}).get("meshes", [])}
+    for entry in snapshot.get("meshes", []):
+        if not entry.pop("unchanged", False):
+            continue
+        source = held.get(entry.get("key") or entry["name"])
+        if source is None:
+            entry["proxy"] = True
+            continue
+        for field in GEOMETRY_FIELDS:
+            if field in source:
+                entry[field] = source[field]
+    return snapshot
 
 
 def frame_code(arguments):

@@ -2,6 +2,7 @@
 
 import hashlib
 import math
+from array import array
 
 import bpy
 from mathutils import Vector
@@ -73,7 +74,31 @@ def astra_animation_fingerprint(animated):
     return digest.hexdigest()[:16] if animated else ""
 
 
-def astra_scene_probe(geometry=False):
+def astra_geometry_hash(obj, materials):
+    """Cheap signature of an evaluated mesh and its materials, or None when the
+    type has no fast path and must be serialized every time."""
+    data = obj.data
+    if obj.type != "MESH" or data is None or not hasattr(data, "vertices"):
+        return None
+    digest = hashlib.sha1()
+    digest.update(
+        repr(
+            [(m["name"], m["color"], m["roughness"], m["metallic"], m["opacity"]) for m in materials]
+        ).encode()
+    )
+    count = len(data.vertices)
+    coords = array("f", [0.0]) * (count * 3)
+    if count:
+        data.vertices.foreach_get("co", coords)
+    digest.update(coords.tobytes())
+    digest.update(f"{count}:{len(data.polygons)}".encode())
+    return digest.hexdigest()
+
+
+def astra_scene_probe(geometry=False, known=None):
+    # known maps instance key to the geometry hash the caller already holds;
+    # matching meshes are reported without positions, normals or triangles.
+    known = known or {}
     scene = bpy.context.scene
     depsgraph = bpy.context.evaluated_depsgraph_get()
     camera = scene.camera
@@ -137,6 +162,11 @@ def astra_scene_probe(geometry=False):
             "matrix": _numbers([matrix[r][c] for c in range(4) for r in range(4)]),
             "materials": [_material(slot.material) for slot in obj.material_slots] or [_material(None)],
         }
+        entry["hash"] = astra_geometry_hash(obj, entry["materials"])
+        if entry["hash"] and known.get(key) == entry["hash"]:
+            entry["unchanged"] = True
+            meshes.append(entry)
+            continue
         mesh = None
         try:
             mesh = obj.to_mesh()
