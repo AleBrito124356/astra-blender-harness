@@ -24,6 +24,16 @@ def main():
     run.add_argument("--auto-approve", action="store_true")
     run.add_argument("--quality", choices=["draft", "studio", "final"], default="studio")
     run.add_argument("--max-steps", type=int, default=24)
+    run.add_argument(
+        "--reference",
+        type=Path,
+        action="append",
+        default=[],
+        help="Reference photo (repeat up to 3; requires vision)",
+    )
+    run.add_argument("--animation", choices=["auto", "on", "off"], default="auto")
+    run.add_argument("--frames", type=int, default=120)
+    run.add_argument("--fps", type=int, default=24)
     for command in (serve, doctor, run):
         command.add_argument("--config", type=Path)
         command.add_argument("--output", type=Path, default=Path("runs"))
@@ -51,8 +61,11 @@ def main():
             auto_approve=args.auto_approve,
             quality=args.quality,
             max_steps=args.max_steps,
+            animation=args.animation,
+            animation_frames=args.frames,
+            animation_fps=args.fps,
         )
-        result = asyncio.run(_run(settings, config, args.output))
+        result = asyncio.run(_run(settings, config, args.output, args.reference))
         raise SystemExit(0 if result == "completed" else 1)
 
 
@@ -71,8 +84,13 @@ async def _doctor(config):
             print("Blender connected. Tools: " + ", ".join(found))
 
 
-async def _run(settings, config, output):
+async def _run(settings, config, output, reference_paths=()):
+    from . import references
+
+    if len(reference_paths) > 3:
+        raise ValueError("Use at most three reference images")
     run = Run(settings, output)
+    references.attach(run, reference_paths)
     original_emit = run.emit
 
     def emit(kind, **data):

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 
-export function mountViewer({api}) {
+export function mountViewer({api,timeline=false}) {
   const el = id => document.getElementById(id);
   const host = el('live-scene');
   let renderer;
@@ -36,12 +36,15 @@ export function mountViewer({api}) {
   let requestActive = false, sceneCamera = null, cameraMode = false, initialized = false;
   let wireframe = false, box = null, frameRequest = 0, viewWidth = 1, viewHeight = 1;
   let updatedAt = null, paused = false;
+  let playing=false, playTimer, seeking=false, queuedFrame=null, playStarted=0, playFirst=1;
 
   function status(text,problem=false) {el('live-status').textContent=text;el('live-status').classList.toggle('warn',problem);}
   function setMode(live) {
     active=live;
     host.hidden=!live;el('preview').hidden=live || !el('preview').getAttribute('src');
     el('empty-view').hidden=live || !!el('preview').getAttribute('src');
+    el('timeline').hidden=!live||!timeline||!snapshot?.timeline?.animated_objects?.length;
+    if(!live)stopPlayback();
     el('live-tools').hidden=!live;el('object-info').hidden=!live||!selected;
     el('live-toggle').classList.toggle('selected',live);
     el('snapshots-toggle').classList.toggle('selected',!live);
@@ -108,6 +111,11 @@ export function mountViewer({api}) {
   }
   function rebuild(data) {
     snapshot=data;
+    const timing=data.timeline;
+    el('timeline').hidden=!active||!timeline||!timing?.animated_objects?.length;
+    if(timing){el('frame-slider').min=timing.start;el('frame-slider').max=timing.end;
+      el('frame-slider').value=data.frame;el('frame-label').textContent='Frame '+data.frame+' / '+timing.end;}
+
     while(root.children.length){const obj=root.children[0];root.remove(obj);freeObject(obj);}
     for(const item of data.meshes) {
       if(item.proxy){
@@ -166,13 +174,13 @@ export function mountViewer({api}) {
   }
   async function tick() {
     clearTimeout(timer);
-    if(!active||paused||disposed||document.hidden||requestActive)return;
+    if(!active||paused||playing||disposed||document.hidden||requestActive)return;
     requestActive=true;
     try {
       const response=await api('/scene/live?revision='+encodeURIComponent(revision));
       const data=await response.json();
-      if(data.snapshot){rebuild(data.snapshot);revision=data.revision;}
-      if(data.captured_at)updatedAt=data.captured_at;
+      if(data.snapshot&&(!updatedAt||data.captured_at>=updatedAt)){rebuild(data.snapshot);revision=data.revision;}
+      if(data.captured_at)updatedAt=Math.max(updatedAt||0,data.captured_at);
       const age=updatedAt?Math.max(0,Math.round(Date.now()/1000-updatedAt)):null;
       status(data.error||(data.refreshing&&age>4?'Blender is busy · showing last scene':snapshot?
         'Live sync · '+(age||0)+'s ago':'Connecting to Blender…'),!!data.error);
@@ -187,6 +195,36 @@ export function mountViewer({api}) {
     } catch(error){status(error.message,true);}
     finally{requestActive=false;if(active&&!paused&&!disposed)timer=setTimeout(tick,1800);}
   }
+  function stopPlayback(){playing=false;clearTimeout(playTimer);el('animation-play').textContent='Play';}
+  async function seek(frame){
+    if(!timeline)return false;
+    if(seeking){queuedFrame=frame;return false;}
+    seeking=true;
+    try{
+      const response=await api('/scene/frame',{method:'POST',body:JSON.stringify({frame})});
+      const data=await response.json();
+      if(data.error)throw new Error(data.error);
+      if(data.snapshot){rebuild(data.snapshot);revision=data.revision;updatedAt=data.captured_at;}
+      status('Blender frame '+frame);return true;
+    }catch(error){stopPlayback();status(error.message,true);return false;}
+    finally{seeking=false;if(queuedFrame!==null){const next=queuedFrame;queuedFrame=null;queueMicrotask(()=>seek(next));}}
+  }
+  async function playback(){
+    if(!playing||document.hidden){stopPlayback();return;}
+    if(seeking){playTimer=setTimeout(playback,50);return;}
+    const timing=snapshot.timeline;
+    const frame=Math.min(timing.end,playFirst+Math.floor((performance.now()-playStarted)/1000*timing.fps));
+    if(!await seek(frame)||frame>=timing.end){stopPlayback();tick();return;}
+    if(playing)playTimer=setTimeout(playback,160);
+  }
+  el('frame-slider').oninput=()=>{el('frame-label').textContent='Frame '+el('frame-slider').value;};
+  el('frame-slider').onchange=async()=>{stopPlayback();await seek(Number(el('frame-slider').value));};
+  el('animation-play').onclick=()=>{
+    if(playing){stopPlayback();tick();return;}
+    if(!snapshot?.timeline)return;
+    playing=true;playFirst=snapshot.frame>=snapshot.timeline.end?snapshot.timeline.start:snapshot.frame;
+    playStarted=performance.now();el('animation-play').textContent='Pause';playback();
+  };
   let pointerDown=null;
   renderer.domElement.addEventListener('pointerdown',event=>{pointerDown=[event.clientX,event.clientY];});
   renderer.domElement.addEventListener('pointerup',event=>{

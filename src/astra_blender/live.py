@@ -125,6 +125,13 @@ class LiveScene:
             else None,
         }
 
+    async def fresh(self):
+        if self.refresh_task and not self.refresh_task.done():
+            await self.refresh_task
+        self.refresh_task = asyncio.create_task(self._refresh())
+        await self.refresh_task
+        return await self.read()
+
     async def close(self):
         if self.refresh_task:
             self.refresh_task.cancel()

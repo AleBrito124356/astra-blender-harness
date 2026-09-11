@@ -65,6 +65,10 @@ def astra_scene_probe(geometry=False):
             "id": str(index) + ":" + obj.name,
             "name": obj.name,
             "type": obj.type,
+            "parent": obj.original.parent.name if obj.original.parent else None,
+            "anchor": obj.original.get("astra_anchor", ""),
+            "max_gap": obj.original.get("astra_max_gap", 0.15),
+            "origin": _numbers(matrix.translation),
             "bounds": [_numbers(low), _numbers(high)],
             "center": _numbers(center),
             "dimensions": _numbers(dimensions),
@@ -158,6 +162,14 @@ def astra_scene_probe(geometry=False):
         "scene": scene.name,
         "source_file": bpy.path.basename(bpy.data.filepath) if bpy.data.filepath else "Unsaved scene",
         "frame": scene.frame_current,
+        "timeline": {
+            "start": scene.frame_start,
+            "end": scene.frame_end,
+            "fps": scene.render.fps / scene.render.fps_base,
+            "animated_objects": [
+                o.name for o in scene.objects if o.animation_data and o.animation_data.action
+            ],
+        },
         "blender_version": bpy.app.version_string,
         "objects": objects,
         "meshes": meshes,

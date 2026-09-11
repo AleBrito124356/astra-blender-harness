@@ -5,6 +5,7 @@ let token = '', runId = null, cursor = 0, polling = false, demoMode = false;
 let providers = [], savedProfiles = [], secretBackend = null, continueTarget = null, resumableRuns = [];
 const objectUrls = [];
 const seenImages = new Set();
+const referencePhotos=[];let referenceUploading=false;
 const CUSTOM = '__custom__';
 const presets = {
   product:'Create a sculptural ceramic lamp on a travertine plinth. Warm ivory glaze, subtle surface variation, soft side light and a dark warm-gray background. Premium product photograph with generous negative space. Build an original scene in a new ASTRA collection. Set a camera and save the scene.',
@@ -40,6 +41,8 @@ function applyResume(id){
   // an empty prompt and was rejected before any run existed. Reuse the
   // stopped run's own brief.
   if(entry&&entry.prompt&&!$('prompt').value.trim())$('prompt').value=entry.prompt;
+  if(entry){$('animation-mode').value=entry.animation||'auto';$('animation-frames').value=entry.animation_frames||120;$('animation-fps').value=entry.animation_fps||24;
+    if(entry.reference_count)$('reference-hint').textContent='Continuing with '+entry.reference_count+' saved reference photo(s). New uploads replace them.';}
   syncResumeLabel();
 }
 function syncResumeLabel(){
@@ -210,12 +213,14 @@ async function start(demo=false){
   busy(true);notice('');demoMode=demo;if(demo)liveViewer?.pause();
   try{
     const model=currentModel();
+    if(!demo&&referenceUploading){notice('Wait for the reference upload to finish.');busy(false);return;}
+    if(!demo&&referencePhotos.length&&!$('vision').checked){notice('Reference photos require a vision model. Enable Vision feedback or remove the photos.');busy(false);return;}
     if(!demo&&!model){notice('Choose a model first.');busy(false);return;}
     if(!demo&&!$('api-key').value&&!$('profile').value&&$('provider').value!=='ollama_chat'&&!/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test($('api-base').value)){
       notice('No API key. Paste one, or pick a saved setup that remembers it.');
       busy(false);if(continueTarget)$('continue').hidden=false;return;
     }
-    const body={prompt:$('prompt').value,model,api_key:$('api-key').value,profile:$('profile').value||null,
+    const body={reference_ids:referencePhotos.map(p=>p.id),animation:$('animation-mode').value,animation_frames:Number($('animation-frames').value),animation_fps:Number($('animation-fps').value),prompt:$('prompt').value,model,api_key:$('api-key').value,profile:$('profile').value||null,
       api_base:$('api-base').value.trim()||null,quality:$('quality').value,tool_mode:$('tool-mode').value,
       vision:$('vision').checked,auto_approve:$('auto').checked,max_steps:Number($('steps').value),
       max_output_tokens:Number($('output-tokens').value),max_total_tokens:Number($('tokens').value),timeout_seconds:Number($('timeout').value),
@@ -231,7 +236,7 @@ async function start(demo=false){
   }catch(error){notice(error.message);busy(false);if(continueTarget)$('continue').hidden=false;}
 }
 async function imageFile(filename){
-  if(seenImages.has(filename))return;
+  if(filename.startsWith('reference-')||seenImages.has(filename))return;
   const response=await api('/runs/'+runId+'/files/'+encodeURIComponent(filename));
   const url=URL.createObjectURL(await response.blob());objectUrls.push(url);seenImages.add(filename);
   const show=()=>{liveViewer?.showSnapshot();$('preview').src=url;$('preview').hidden=false;$('empty-view').hidden=true;$('image-label').textContent=(demoMode?'DEMO ILLUSTRATION · ': '')+filename;};
@@ -291,6 +296,25 @@ async function loadRunHistory(){
   }catch{}
 }
 $('run-history').onchange=async()=>{if(polling){notice('Stop or finish the active run before switching history.');$('run-history').value=runId;return;}if($('run-history').value){await reattach($('run-history').value);remember(runId);}};
+function renderReferences(){
+  $('reference-gallery').replaceChildren(...referencePhotos.map(photo=>{
+    const card=document.createElement('div'),image=document.createElement('img'),remove=document.createElement('button');
+    image.src=photo.url;image.alt=photo.name;remove.type='button';remove.textContent='Remove';remove.setAttribute('aria-label','Remove '+photo.name);
+    remove.onclick=async()=>{try{await api('/references/'+photo.id,{method:'DELETE'});URL.revokeObjectURL(photo.url);referencePhotos.splice(referencePhotos.indexOf(photo),1);renderReferences();}catch(error){notice(error.message);}};
+    card.append(image,remove);return card;
+  }));
+}
+$('reference-upload').onchange=async()=>{
+  const files=[...$('reference-upload').files];$('reference-upload').value='';
+  if(files.length+referencePhotos.length>3){notice('Choose at most three reference photos.');return;}
+  referenceUploading=true;
+  try{for(const file of files){
+    if(file.size>8*1024*1024)throw new Error('Each reference must be at most 8 MB.');
+    const response=await api('/references',{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream'},body:file});
+    const data=await response.json();referencePhotos.push({id:data.id,name:file.name,url:URL.createObjectURL(file)});renderReferences();
+  }notice($('vision').checked?'Reference ready. Describe the parts and motion you want.':'Reference ready. Choose a vision model and enable Vision feedback before starting.');}
+  catch(error){notice(error.message);}finally{referenceUploading=false;}
+};
 /* ---------- wiring ---------- */
 $('brief-form').onsubmit=event=>{event.preventDefault();start();};
 $('demo').onclick=()=>start(true);
@@ -322,11 +346,13 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
   try{
     const session=await (await fetch('/api/session')).json();token=session.token;
     if(session.features?.includes('live_scene')){
-      try{const module=await import('/viewer.bundle.js');liveViewer=module.mountViewer({api});}catch{$('live-status').textContent='3D viewer unavailable; saved images remain available.';}
+      try{const module=await import('/viewer.bundle.js');liveViewer=module.mountViewer({api,timeline:session.features.includes('animation')});}catch{$('live-status').textContent='3D viewer unavailable; saved images remain available.';}
     }else{
       $('live-status').textContent='Restart the Astra server: this interface needs the Live 3D backend from version 0.2 or newer.';
       $('live-status').classList.add('warn');$('live-toggle').disabled=true;$('live-tools').hidden=true;
     }
+    $('reference-upload').disabled=!session.features?.includes('references');
+    if($('reference-upload').disabled)$('reference-hint').textContent='Restart Astra with version 0.3.0 or newer to upload references.';
     await loadRunHistory();
     const data=await json('/models',undefined,'GET');providers=data.providers;
     fillProviders();$('provider').value='openai';fillModels('openai');

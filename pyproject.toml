@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astra-blender-harness"
-version = "0.2.0"
+version = "0.3.0"
 description = "A local, model-agnostic Blender MCP studio with visual feedback and bounded agent runs."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Alejandro Brito"}]
-dependencies = ["mcp>=1.26,<2", "litellm>=1.81,<2", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "jsonschema>=4.23,<5", "httpx>=0.28,<1"]
+dependencies = ["mcp>=1.26,<2", "litellm>=1.81,<2", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "jsonschema>=4.23,<5", "httpx>=0.28,<1", "Pillow>=11,<13"]
 
 [project.optional-dependencies]
 # Optional: lets Astra remember an API key in the OS keyring instead of asking

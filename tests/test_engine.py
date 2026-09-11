@@ -437,3 +437,36 @@ async def test_empty_native_output_cannot_complete_a_phase(tmp_path):
     run, _ = await run_with(tmp_path, provider=provider, vision=False)
     assert run.status == "budget_exhausted"
     assert any(e["type"] == "repair" for e in run.events)
+
+
+async def test_reference_images_survive_viewport_history_pruning(tmp_path):
+    from PIL import Image
+
+    from astra_blender.references import attach
+
+    source = tmp_path / "ref.png"
+    Image.new("RGB", (64, 64), "red").save(source)
+    provider = Provider([{"role": "assistant", "content": "Plan"}, action(), action()])
+    session = Session()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    run = Run(RunConfig(prompt="Model the reference photo", auto_approve=True), tmp_path)
+    attach(run, [source])
+    await execute(run, MCPConfig(), provider, connector)
+    assert run.status == "completed"
+    for messages in provider.messages:
+        target = next(
+            m
+            for m in messages
+            if isinstance(m.get("content"), list)
+            and any(
+                b.get("type") == "text" and b.get("text", "").startswith("REFERENCE PHOTOS")
+                for b in m["content"]
+            )
+        )
+        assert any(b.get("type") == "image_url" for b in target["content"])
+        assert all("astra_reference" not in m for m in messages)
+    assert "data:image" not in (run.directory / "state.json").read_text()

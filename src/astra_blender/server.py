@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 from pydantic import Field as PydField
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import catalog, profiles
+from . import __version__, catalog, profiles, references
 from .bridge import discover
 from .config import MCPConfig, RunConfig, validate_api_base
 from .engine import TERMINAL, Run, execute, result_parts
@@ -134,7 +134,59 @@ def create_app(config=None, output=None):
 
     @app.get("/api/session")
     async def session():
-        return {"token": token, "transport": config.transport, "version": "0.2.0", "features": ["live_scene"]}
+        return {
+            "token": token,
+            "transport": config.transport,
+            "version": __version__,
+            "features": ["live_scene", "references", "animation"],
+        }
+
+    @app.post("/api/references", dependencies=[Depends(auth)])
+    async def upload_reference(request: Request):
+        raw = bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw) > references.MAX_UPLOAD:
+                raise HTTPException(413, "Reference image exceeds 8 MB")
+        try:
+            data = await asyncio.to_thread(references.normalize, bytes(raw))
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+        identifier = secrets.token_hex(16)
+        directory = output / ".references"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / (identifier + ".jpg")).write_bytes(data)
+        return {"id": identifier, "size": len(data)}
+
+    @app.delete("/api/references/{identifier}", dependencies=[Depends(auth)])
+    async def remove_reference(identifier: str):
+        if not RUN_ID.fullmatch(identifier):
+            raise HTTPException(404, "Reference not found")
+        (output / ".references" / (identifier + ".jpg")).unlink(missing_ok=True)
+        return {"ok": True}
+
+    class FrameRequest(BaseModel):
+        frame: int = PydField(ge=1, le=100000)
+
+    @app.post("/api/scene/frame", dependencies=[Depends(auth)])
+    async def seek_frame(body: FrameRequest):
+        if busy.locked() or any(r.status not in TERMINAL for r in runs.values()):
+            raise HTTPException(409, "Finish or stop the model run before moving the timeline.")
+        async with busy:
+            code = (
+                "import bpy\nscene=bpy.context.scene\nframe="
+                + str(body.frame)
+                + "\nif not scene.frame_start <= frame <= scene.frame_end:\n    raise ValueError('Frame is outside the scene range')\nscene.frame_set(frame)\nprint('Frame updated')"
+            )
+            result = await hub.call_tool(
+                "execute_blender_code",
+                {"code": code, "user_prompt": "Preview the animation at the frame selected in Astra."},
+            )
+            if result_parts(result)[0].startswith("TOOL ERROR:"):
+                raise HTTPException(
+                    422, "Blender could not set that frame. Check the scene range and connection."
+                )
+            return await live_scene.fresh()
 
     @app.post("/api/doctor", dependencies=[Depends(auth)])
     async def doctor():
@@ -239,7 +291,18 @@ def create_app(config=None, output=None):
             raise HTTPException(409, "Wait for or stop the current run")
         if len(runs) >= 50:
             raise HTTPException(429, "50-run session limit reached. Restart Astra; files remain on disk.")
+        sources = [output / ".references" / (identifier + ".jpg") for identifier in settings.reference_ids]
+        if not sources and settings.resume_from:
+            sources = sorted((output / settings.resume_from).glob("reference-*.jpg"))[:3]
+        if sources and not settings.vision:
+            raise HTTPException(422, "References require a vision model with Vision feedback enabled.")
+        if any(not path.is_file() for path in sources):
+            raise HTTPException(404, "A reference is missing. Upload it again.")
         run = Run(settings, output)
+        try:
+            references.attach(run, sources)
+        except (OSError, ValueError) as error:
+            raise HTTPException(422, "Could not attach references: " + str(error))
         runs[run.id] = run
         if demo:
             run.emit("demo", message="DEMO: scripted model and simulated Blender. Images are illustrations.")
@@ -264,7 +327,15 @@ def create_app(config=None, output=None):
             remembered = profiles.load_secret(settings.profile)
             if remembered:
                 settings = settings.model_copy(update={"api_key": SecretStr(remembered)})
-        return start(settings, state=load_state(settings.resume_from) if settings.resume_from else None)
+        state = load_state(settings.resume_from) if settings.resume_from else None
+        if state:
+            inherited = {
+                key: state[key]
+                for key in ("animation", "animation_frames", "animation_fps")
+                if key in state and key not in settings.model_fields_set
+            }
+            settings = settings.model_copy(update=inherited)
+        return start(settings, state=state)
 
     @app.post("/api/demo", dependencies=[Depends(auth)])
     async def demo():
@@ -300,6 +371,10 @@ def create_app(config=None, output=None):
                 {
                     "id": directory.name,
                     "stage": data.get("stage"),
+                    "animation": data.get("animation", "auto"),
+                    "animation_frames": data.get("animation_frames", 120),
+                    "animation_fps": data.get("animation_fps", 24),
+                    "reference_count": len(list(directory.glob("reference-*.jpg"))),
                     "steps": data.get("steps", 0),
                     # Full brief, not a display snippet: continuing reuses it,
                     # and a truncated one would silently change the request.

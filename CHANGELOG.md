@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 — 2026-09-11
+
+- Reference photos: up to three PNG, JPEG or WebP images per run, normalized locally (EXIF removed, 1536 px, re-encoded as JPEG), sent to vision models as modeling targets and saved with the run. Carried over when a run is continued.
+- Motion per run: detect from the brief, animate, or still scene, with frame count and fps. The deliverable keeps editable parts and keyframes in the .blend.
+- Trusted assembly and animation tools for the model: `astra_assemble_parts`, `astra_place_on_ground`, `astra_keyframe_object` and `astra_inspect_animation` (evaluated poses at up to five frames, saved as `animation.json`). Camera fitting accepts frames so the framing covers the whole motion.
+- Timeline in the live viewer: scrub and play evaluated Blender poses through a server-side frame seek.
+- Run history selector, maximum response tokens setting, keyless local models, and interrupted runs listed for continuation.
+
 ## 0.2.0 — 2026-09-11
 
 - Large interactive live Blender geometry viewer with preserved navigation, selection, framing, wireframe, pause, render-camera projection and mobile layout.
