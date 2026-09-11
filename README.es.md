@@ -13,9 +13,21 @@ Un estudio local para conectar modelos de IA al MCP de Blender con tu propia API
 
 El visor usa geometría evaluada real y materiales simplificados; no reproduce texturas, luces o composición final de Cycles/Eevee. Durante un render conserva la última escena navegable hasta que Blender pueda responder. Consulta [detalles, límites y desarrollo](docs/live-scene.md).
 
+## Qué puede hacer el modelo
+
+Además de las herramientas del MCP de Blender (leer la escena y sus objetos, capturar el viewport en ejecuciones con visión y ejecutar Python con aprobación), Astra ofrece herramientas de confianza cuyo código no escribe el modelo: sus argumentos se validan contra un esquema y se inyectan como literales. `astra_inspect_scene` (evidencia numérica, solo lectura), `astra_frame_camera` (encuadre de sujetos concretos), `astra_assemble_parts` (ensamblar piezas bajo un Empty sin moverlas), `astra_place_on_ground` (apoyar un conjunto entero en el suelo), `astra_keyframe_object` (keyframes locales, en radianes) y `astra_inspect_animation` (poses evaluadas en hasta cinco frames más un barrido de cajas en dieciséis que detecta solapamientos nuevos, piezas bajo el suelo y piezas separadas de su ancla). Las fases de planificación y revisión solo ofrecen las de lectura.
+
+## Vista previa de movimiento
+
+El timeline del visor hornea las matrices de la animación en una sola lectura y la reproduce en el navegador: play, pausa, bucle, velocidad ½×/2×, scrub instantáneo y espacio para alternar. No mueve el playhead de Blender ni le pide un frame cada vez, y funciona mientras el modelo trabaja. Las mallas que deforman (armaduras, shape keys, simulaciones) conservan su pose actual y se indican. El timeline se ve antes de que haya keyframes, deshabilitado y con el motivo. La sincronización en vivo es incremental: Blender solo serializa las mallas que cambiaron desde la última lectura.
+
+## Resultados de una ejecución
+
+`completed`, `incomplete` (la escena está construida y guardada pero falta un entregable pedido —por ahora, una animación sin keyframes— y se puede continuar), `budget_exhausted`, `cancelled` y `failed`. Las palabras de movimiento en el brief son solo una pista: únicamente «Animate» exige keyframes. Cada ejecución guarda en `runs/<id>/` copias `.blend` por fase (nunca sobrescribe tu archivo), capturas, `quality.json`, `animation.json`, las fotos de referencia normalizadas, `state.json` para continuar, la traza `events.jsonl` con la clave redactada, `manifest.json` y `error.log` si falló.
+
 ## Inicio rápido
 
-Necesitas Python 3.11+, Blender con el add-on Blender MCP activo y uv para ejecutar el servidor predeterminado.
+Necesitas Python 3.11+, Blender con el add-on Blender MCP activo y, opcionalmente, uv: si `uvx` no está en el PATH, Astra usa el `blender-mcp` instalado junto a su propio intérprete.
 
 El modelo se elige de una lista construida desde el catálogo de LiteLLM instalado, que marca qué modelos admiten llamadas a herramientas y visión. Escribir un nombre comercial en vez del identificador (`deepseek/deepseek-v4-pro`, no `Deepseek V4 Pro`) es la causa habitual de que una ejecución falle en el primer turno. Con el botón **↻** se pregunta al propio proveedor qué modelos sirve y se rellena la lista con identificadores ya listos, lo que resuelve el caso de pasarelas como NVIDIA NIM, cuyos IDs (`deepseek-ai/deepseek-v4-pro-0813`) ningún catálogo estático mantiene.
 
