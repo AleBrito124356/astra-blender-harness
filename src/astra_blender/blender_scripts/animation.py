@@ -1,6 +1,9 @@
 """Bounded transform animation and evaluated pose inspection."""
 
 import bpy
+from mathutils import Vector
+
+GEOMETRY = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
 
 
 def astra_curves(obj):
@@ -71,6 +74,48 @@ def astra_keyframes(name, keys, fps=24, interpolation="BEZIER"):
     }
 
 
+def astra_sweep_frames(start, end, count=16):
+    if end <= start:
+        return [start]
+    return sorted({start + round((end - start) * i / (count - 1)) for i in range(count)})
+
+
+def astra_motion_sweep(frames):
+    """World bounds of every visible geometry instance at each frame.
+
+    Three sampled poses cannot say what happens between them. Boxes at sixteen
+    frames cost no mesh serialization and are enough to flag parts that start
+    intersecting, sink below the ground or drift from their anchor mid-motion.
+    The summary is computed by the harness; the model never sees raw boxes.
+    """
+    scene = bpy.context.scene
+    original = scene.frame_current
+    bounds, anchors, max_gaps = {}, {}, {}
+    try:
+        for frame in frames:
+            scene.frame_set(frame)
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            seen = {}
+            for instance in depsgraph.object_instances:
+                obj = instance.object
+                if obj.hide_render or obj.type not in GEOMETRY:
+                    continue
+                seen[obj.name] = seen.get(obj.name, 0) + 1
+                key = obj.name if seen[obj.name] == 1 else f"{obj.name}#{seen[obj.name]}"
+                corners = [instance.matrix_world @ Vector(corner) for corner in obj.bound_box]
+                low = [round(min(p[i] for p in corners), 4) for i in range(3)]
+                high = [round(max(p[i] for p in corners), 4) for i in range(3)]
+                bounds.setdefault(key, []).append([low, high])
+                source = obj.original
+                if source.get("astra_anchor"):
+                    anchors[key] = source["astra_anchor"]
+                    max_gaps[key] = float(source.get("astra_max_gap", 0.15))
+    finally:
+        scene.frame_set(original)
+    bounds = {key: boxes for key, boxes in bounds.items() if len(boxes) == len(frames)}
+    return {"frames": frames, "bounds": bounds, "anchors": anchors, "max_gaps": max_gaps}
+
+
 def astra_animation_report(frames=None):
     scene = bpy.context.scene
     original = scene.frame_current
@@ -114,6 +159,7 @@ def astra_animation_report(frames=None):
         "fps": scene.render.fps / scene.render.fps_base,
         "actions": actions,
         "samples": samples,
+        "sweep": astra_motion_sweep(astra_sweep_frames(scene.frame_start, scene.frame_end)),
         "restored_frame": original,
         "limits": "Sampled poses cannot prove collision-free motion between samples. Simulations are not baked.",
     }
