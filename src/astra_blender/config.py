@@ -60,6 +60,11 @@ class RunConfig(BaseModel):
     animation_fps: int = Field(default=24, ge=1, le=60)
 
     def wants_animation(self):
+        """Whether the brief reads like an animation request.
+
+        A hint, not a verdict: in "auto" mode the model is told the brief may
+        describe motion, and only animation="on" makes keyframes a requirement.
+        """
         return self.animation == "on" or (
             self.animation == "auto"
             and bool(

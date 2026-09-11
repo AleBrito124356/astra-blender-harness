@@ -52,7 +52,9 @@ READ_ONLY = {
     "astra_inspect_scene",
     "astra_inspect_animation",
 }
-TERMINAL = {"completed", "failed", "cancelled", "budget_exhausted"}
+# "incomplete": the scene was built and saved, but a requested deliverable
+# (so far, animation) is missing. Continuable, and not a failure of anything.
+TERMINAL = {"completed", "failed", "cancelled", "budget_exhausted", "incomplete"}
 
 
 class AnimationIncomplete(RuntimeError):
@@ -255,8 +257,8 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
             run.status = "budget_exhausted"
             run.emit("budget_exhausted", message=str(cause))
         elif isinstance(cause, AnimationIncomplete):
-            run.status = "failed"
-            run.emit("failed", message=str(cause))
+            run.status = "incomplete"
+            run.emit("incomplete", message=str(cause))
         elif isinstance(cause, TimeoutError):
             run.status = "failed"
             run.emit(
@@ -332,7 +334,22 @@ async def _loop(run, session, tools, provider, state=None):
         if not run.config.vision:
             raise ValueError("Reference photos require vision")
         messages.append(reference)
-    animated = run.config.wants_animation() or bool(state and state.get("animation") == "on")
+    # Only an explicit request makes animation a requirement. In "auto" mode a
+    # brief that merely mentions motion words - "motion blur", "a walking path",
+    # "rotating-door mechanism" - gets a hint, never a gate: four such still
+    # briefs were being marked failed with the scene built and unsaved.
+    animated = run.config.animation == "on" or bool(state and state.get("animation") == "on")
+    hinted = not animated and run.config.animation == "auto" and run.config.wants_animation()
+    if hinted:
+        messages.append(
+            {
+                "role": "user",
+                "content": "The brief may describe motion. If it asks for animation, deliver it: distinct "
+                "parts, a root controller, keyframes in radians via astra_keyframe_object, and inspect "
+                "start/middle/end with astra_inspect_animation. If it describes a still scene (motion "
+                "blur, a path as geometry, a mechanism at rest), build the still scene and say so.",
+            }
+        )
     if animated:
         run.config.animation = "on"
         messages.append(
@@ -601,20 +618,25 @@ async def _loop(run, session, tools, provider, state=None):
                 "Continue with a larger total or per-phase budget. Automatic build budgeting reserves turns for finishing."
             )
         if stage in {"build", "refine"}:
-            if animated:
+            if animated or hinted:
                 text, _ = await call("astra_inspect_animation", {}, internal=True)
                 messages.append({"role": "user", "content": "Motion evidence:\n" + text})
             await evidence()
             await save(f"{stage}.blend")
+    motion_found = True
     if animated:
         animation_text, _ = await call("astra_inspect_animation", {}, internal=True)
-        if not any(
+        motion_found = any(
             action.get("changing_channels") for action in json.loads(animation_text).get("actions", [])
-        ):
-            raise AnimationIncomplete(
-                "Animation was requested but no active action with changing keyframe values was found. "
-                "Continue and create the motion; NLA-only or procedural rigs need explicit inspection."
-            )
+        )
     audit, _ = await call("astra_inspect_scene", {}, internal=True)
     messages.append({"role": "user", "content": "Final scene audit:\n" + audit})
+    # The scene is saved before any verdict on it: an incomplete deliverable
+    # is still the person's work, and the run stays continuable.
     await save("scene.blend")
+    if not motion_found:
+        raise AnimationIncomplete(
+            "Animation was requested but no action with changing keyframe values exists. The still "
+            "scene was saved as scene.blend. Continue this run to add the motion; NLA-only or "
+            "procedural rigs need explicit inspection."
+        )

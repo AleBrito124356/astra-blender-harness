@@ -197,7 +197,7 @@ async function reattach(id){
   $('usage').textContent=data.steps+' turns · '+data.total_tokens.toLocaleString()+' tokens';
   $('viewport-label').textContent=liveViewer?.isLive()?'BLENDER / LIVE 3D':'SAVED IMAGE';
   await loadFiles();
-  const live=!data.archived&&!['completed','failed','cancelled','budget_exhausted'].includes(data.status);
+  const live=!data.archived&&!['completed','failed','cancelled','budget_exhausted','incomplete'].includes(data.status);
   if(live){busy(true);polling=true;notice('Reattached to the run still in progress. Approvals below are live.');poll();}
   else{document.querySelectorAll('.approval-actions button').forEach(button=>button.disabled=true);}
   return live;
@@ -246,7 +246,7 @@ async function imageFile(filename){
 function addEvent(event){
   if(['usage','image','decision','deadline'].includes(event.type))return;
   const item=document.createElement('div');item.className='event';item.dataset.kind=event.type;
-  if(['failed','budget_exhausted','denied'].includes(event.type)||event.is_error)item.classList.add('error');
+  if(['failed','budget_exhausted','incomplete','denied'].includes(event.type)||event.is_error)item.classList.add('error');
   const tag=document.createElement('span');tag.className='event-tag';tag.textContent=event.type.replaceAll('_',' ')+(event.tool?' / '+event.tool:'');item.append(tag);
   const text=document.createElement('p');text.textContent=event.text||event.message||event.phase||(event.tools?event.tools.join(' · '):'');if(event.type==='tool_result'){const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent=event.is_error?'Tool error — inspect details':'Result — inspect details';details.open=!!event.is_error;details.append(summary,text);item.append(details);}else item.append(text);
   if(event.arguments){const detail=document.createElement('details');const summary=document.createElement('summary');summary.textContent=event.type==='approval'?'Review proposed Blender operation':'Tool arguments';const code=document.createElement('pre');code.textContent=JSON.stringify(event.arguments,null,2);detail.append(summary,code);detail.open=event.type==='approval';item.append(detail);}
@@ -267,7 +267,7 @@ async function poll(){
       if(event.type==='image'){try{await imageFile(event.file);}catch(error){notice('Preview unavailable: '+error.message);}}
     }
     cursor=data.cursor;
-    if(['completed','failed','cancelled','budget_exhausted'].includes(data.status)){
+    if(['completed','failed','cancelled','budget_exhausted','incomplete'].includes(data.status)){
       polling=false;busy(false);
       document.querySelectorAll('.approval-actions button').forEach(button=>button.disabled=true);
       await loadFiles();await loadResumable();await loadRunHistory();
