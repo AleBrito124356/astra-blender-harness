@@ -1,0 +1,2 @@
+# Preserve generated shader strings and keep the bundled viewer out of hand-written diff statistics.
+src/astra_blender/static/viewer.bundle.js linguist-generated=true -whitespace
