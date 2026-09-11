@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astra-blender-harness"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local, model-agnostic Blender MCP studio with visual feedback and bounded agent runs."
 readme = "README.md"
 requires-python = ">=3.11"

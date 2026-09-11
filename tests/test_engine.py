@@ -396,3 +396,44 @@ async def test_a_real_length_key_is_still_redacted(tmp_path):
     trace = (run.directory / "events.jsonl").read_text(encoding="utf-8")
     assert "sk-long-enough-key" not in trace
     assert "[REDACTED]" in trace
+
+
+async def test_text_only_uses_numerical_audits_without_screenshot_calls(tmp_path):
+    provider = Provider()
+    run, session = await run_with(tmp_path, provider=provider, vision=False)
+    assert run.status == "completed"
+    assert not any(name == "get_viewport_screenshot" for name, _ in session.calls)
+    assert not list(run.directory.glob("viewport-*.png"))
+    assert (run.directory / "quality.json").is_file()
+    assert "Numerical scene audit" in json.dumps(provider.messages)
+
+
+async def test_auto_build_can_use_more_than_half_total_turns(tmp_path):
+    # A 16-turn build plus completion previously hit the hidden 12-turn cap.
+    responses = [{"role": "assistant", "content": "Plan"}] + [action()] * 16
+    run, _ = await run_with(tmp_path, provider=Provider(responses), vision=False)
+    assert run.status == "completed"
+    assert run.steps == 21
+
+
+async def test_failed_python_still_gets_spatial_audit(tmp_path):
+    class Partial(Session):
+        async def call_tool(self, name, args):
+            if "model mutation" in args.get("code", ""):
+                self.calls.append((name, args))
+                return CallToolResult(
+                    content=[TextContent(type="text", text="Error: partial edit then failed")]
+                )
+            return await super().call_tool(name, args)
+
+    provider = Provider([{"role": "assistant", "content": "Plan"}, action()])
+    run, _ = await run_with(tmp_path, provider=provider, session=Partial(), vision=False)
+    assert run.status == "completed"
+    assert any("After-edit spatial checks" in str(m) for m in provider.messages[2])
+
+
+async def test_empty_native_output_cannot_complete_a_phase(tmp_path):
+    provider = Provider([{"role": "assistant", "content": ""}] * 4)
+    run, _ = await run_with(tmp_path, provider=provider, vision=False)
+    assert run.status == "budget_exhausted"
+    assert any(e["type"] == "repair" for e in run.events)

@@ -1,8 +1,10 @@
 'use strict';
 const $ = id => document.getElementById(id);
+let liveViewer = null;
 let token = '', runId = null, cursor = 0, polling = false, demoMode = false;
 let providers = [], savedProfiles = [], secretBackend = null, continueTarget = null, resumableRuns = [];
 const objectUrls = [];
+const seenImages = new Set();
 const CUSTOM = '__custom__';
 const presets = {
   product:'Create a sculptural ceramic lamp on a travertine plinth. Warm ivory glaze, subtle surface variation, soft side light and a dark warm-gray background. Premium product photograph with generous negative space. Build an original scene in a new ASTRA collection. Set a camera and save the scene.',
@@ -62,7 +64,7 @@ function fillModels(provider,preferred){
   const custom=document.createElement('option');custom.value=CUSTOM;custom.textContent='✎ Custom model ID…';$('model-select').append(custom);
   const known=preferred&&list.some(m=>m.id===preferred);
   $('model-select').value=known?preferred:(list.length?list[0].id:CUSTOM);
-  if(preferred&&!known)$('model').value=preferred;
+  if(preferred&&!known){$('model-select').value=CUSTOM;$('model').value=preferred;}
   syncCustom();
 }
 function syncCustom(){
@@ -84,8 +86,8 @@ function updateCaps(){
   caps.textContent=`${model.tools?'✓ tool calling':'⚠ no tool calling'} · ${model.vision?'✓ vision':'✗ text only'} · ${context}`;
   caps.className='caps'+(model.tools?'':' warn');caps.hidden=false;
   // A text-only model cannot read viewport images; leaving vision on would send
-  // image_url blocks it rejects. The harness still saves them for the human.
-  if(!model.vision&&$('vision').checked){$('vision').checked=false;notice('Vision turned off: '+model.id+' is text only. Viewport images are still saved for you to inspect.');}
+  // image_url blocks it rejects. The human viewer receives geometry independently.
+  if(!model.vision&&$('vision').checked){$('vision').checked=false;notice('Vision turned off: '+model.id+' is text only. Live 3D remains available for you to inspect.');}
   if(model.vision&&!$('vision').checked&&!$('vision').dataset.touched)$('vision').checked=true;
   if(!model.tools&&$('tool-mode').value==='native'){$('tool-mode').value='json';notice('Tool protocol switched to JSON actions: '+model.id+' has no native tool calling.');}
 }
@@ -190,57 +192,58 @@ async function reattach(id){
   cursor=data.cursor;
   $('status').textContent=data.status.replaceAll('_',' ').toUpperCase();
   $('usage').textContent=data.steps+' turns · '+data.total_tokens.toLocaleString()+' tokens';
-  $('viewport-label').textContent='BLENDER VIEWPORT';
+  $('viewport-label').textContent=liveViewer?.isLive()?'BLENDER / LIVE 3D':'SAVED IMAGE';
   await loadFiles();
-  const live=!['completed','failed','cancelled','budget_exhausted'].includes(data.status);
+  const live=!data.archived&&!['completed','failed','cancelled','budget_exhausted'].includes(data.status);
   if(live){busy(true);polling=true;notice('Reattached to the run still in progress. Approvals below are live.');poll();}
   else{document.querySelectorAll('.approval-actions button').forEach(button=>button.disabled=true);}
   return live;
 }
 function reset(){
   for(const url of objectUrls)URL.revokeObjectURL(url);objectUrls.length=0;
-  cursor=0;$('activity').replaceChildren();$('gallery').replaceChildren();$('files').replaceChildren();
-  $('preview').hidden=true;$('preview').removeAttribute('src');$('empty-view').hidden=false;
+  seenImages.clear();cursor=0;$('activity').replaceChildren();$('gallery').replaceChildren();$('files').replaceChildren();
+  $('preview').hidden=true;$('preview').removeAttribute('src');$('empty-view').hidden=!!liveViewer?.isLive();
   $('file-empty').hidden=false;$('usage').textContent='0 turns · 0 tokens';
   document.querySelectorAll('[data-phase]').forEach(el=>el.classList.remove('active'));
 }
 async function start(demo=false){
-  busy(true);notice('');demoMode=demo;
+  busy(true);notice('');demoMode=demo;if(demo)liveViewer?.pause();
   try{
     const model=currentModel();
     if(!demo&&!model){notice('Choose a model first.');busy(false);return;}
-    if(!demo&&!$('api-key').value&&!$('profile').value){
+    if(!demo&&!$('api-key').value&&!$('profile').value&&$('provider').value!=='ollama_chat'&&!/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test($('api-base').value)){
       notice('No API key. Paste one, or pick a saved setup that remembers it.');
       busy(false);if(continueTarget)$('continue').hidden=false;return;
     }
     const body={prompt:$('prompt').value,model,api_key:$('api-key').value,profile:$('profile').value||null,
       api_base:$('api-base').value.trim()||null,quality:$('quality').value,tool_mode:$('tool-mode').value,
       vision:$('vision').checked,auto_approve:$('auto').checked,max_steps:Number($('steps').value),
-      max_total_tokens:Number($('tokens').value),timeout_seconds:Number($('timeout').value),
+      max_output_tokens:Number($('output-tokens').value),max_total_tokens:Number($('tokens').value),timeout_seconds:Number($('timeout').value),
       screenshot_max_size:Number($('shot').value),build_max_steps:Number($('build-steps').value),
       inspect_max_steps:Number($('inspect-steps').value),resume_from:$('resume').value||null};
     if(!demo&&!body.max_steps&&!body.max_total_tokens&&!body.timeout_seconds)
-      notice('No turn, token or time limit is set. Only Stop will end this run.');
+      notice('No turn, token or time limit is set. The model may finish on its own; Stop is always available.');
     const data=await json(demo?'/demo':'/runs',demo?{}:body);
-    runId=data.id;remember(runId);reset();$('status').textContent=demo?'DEMO · SIMULATED':'CONNECTING';
-    $('viewport-label').textContent=demo?'OFFLINE DEMO · ILLUSTRATION':'BLENDER VIEWPORT';
+    runId=data.id;remember(runId);reset();loadRunHistory();$('status').textContent=demo?'DEMO · SIMULATED':'CONNECTING';
+    $('viewport-label').textContent=demo?'OFFLINE DEMO · ILLUSTRATION':liveViewer?.isLive()?'BLENDER / LIVE 3D':'BLENDER VIEWPORT';
     if(demo)notice('Demo mode: a scripted walkthrough with an illustration. No model API or Blender is connected, and no .blend file is created.');
     polling=true;await poll();
   }catch(error){notice(error.message);busy(false);if(continueTarget)$('continue').hidden=false;}
 }
 async function imageFile(filename){
+  if(seenImages.has(filename))return;
   const response=await api('/runs/'+runId+'/files/'+encodeURIComponent(filename));
-  const url=URL.createObjectURL(await response.blob());objectUrls.push(url);
-  const show=()=>{$('preview').src=url;$('preview').hidden=false;$('empty-view').hidden=true;$('image-label').textContent=(demoMode?'DEMO ILLUSTRATION · ': '')+filename;};
-  show();const button=document.createElement('button');button.title='View '+filename;
+  const url=URL.createObjectURL(await response.blob());objectUrls.push(url);seenImages.add(filename);
+  const show=()=>{liveViewer?.showSnapshot();$('preview').src=url;$('preview').hidden=false;$('empty-view').hidden=true;$('image-label').textContent=(demoMode?'DEMO ILLUSTRATION · ': '')+filename;};
+  if(!liveViewer?.isLive())show();const button=document.createElement('button');button.title='View '+filename;
   const image=document.createElement('img');image.src=url;image.alt=filename;button.append(image);button.onclick=show;$('gallery').append(button);
 }
 function addEvent(event){
   if(['usage','image','decision','deadline'].includes(event.type))return;
-  const item=document.createElement('div');item.className='event';
+  const item=document.createElement('div');item.className='event';item.dataset.kind=event.type;
   if(['failed','budget_exhausted','denied'].includes(event.type)||event.is_error)item.classList.add('error');
   const tag=document.createElement('span');tag.className='event-tag';tag.textContent=event.type.replaceAll('_',' ')+(event.tool?' / '+event.tool:'');item.append(tag);
-  const text=document.createElement('p');text.textContent=event.text||event.message||event.phase||(event.tools?event.tools.join(' · '):'');item.append(text);
+  const text=document.createElement('p');text.textContent=event.text||event.message||event.phase||(event.tools?event.tools.join(' · '):'');if(event.type==='tool_result'){const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent=event.is_error?'Tool error — inspect details':'Result — inspect details';details.open=!!event.is_error;details.append(summary,text);item.append(details);}else item.append(text);
   if(event.arguments){const detail=document.createElement('details');const summary=document.createElement('summary');summary.textContent=event.type==='approval'?'Review proposed Blender operation':'Tool arguments';const code=document.createElement('pre');code.textContent=JSON.stringify(event.arguments,null,2);detail.append(summary,code);detail.open=event.type==='approval';item.append(detail);}
   if(event.type==='approval'){
     const actions=document.createElement('div');actions.className='approval-actions';
@@ -262,7 +265,7 @@ async function poll(){
     if(['completed','failed','cancelled','budget_exhausted'].includes(data.status)){
       polling=false;busy(false);
       document.querySelectorAll('.approval-actions button').forEach(button=>button.disabled=true);
-      await loadFiles();await loadResumable();
+      await loadFiles();await loadResumable();await loadRunHistory();
       const canContinue=!demoMode&&data.status!=='completed'&&[...$('resume').options].some(o=>o.value===runId);
       // Fall back to the newest stopped run so a failed attempt does not
       // strand the one that is still worth continuing.
@@ -270,7 +273,7 @@ async function poll(){
       offerContinue(target,target===runId?'↻ Continue this run':'↻ Continue last run');
       if(data.status==='completed'){$('resume').value='';syncResumeLabel();}
       else notice('Run '+data.status.replaceAll('_',' ')+'. '+(canContinue
-        ?'Your scene is still in Blender. Press Continue this run to carry on from where it stopped, raising the budgets first if you want it to get further.'
+        ?'Keep the intended scene open in Blender. Press Continue this run to carry on from where it stopped, raising the budgets first if you want it to get further.'
         :'Inspect the activity and Blender before starting again. Partial files remain available.'));
     }
   }catch(error){notice('Connection interrupted: '+error.message+'. Retrying…');}
@@ -278,9 +281,16 @@ async function poll(){
 }
 async function loadFiles(){
   const data=await json('/runs/'+runId+'/files');$('files').replaceChildren();$('file-empty').hidden=!!data.files.length;
-  for(const file of data.files){const button=document.createElement('button');button.textContent='↓ '+file;button.onclick=async()=>{try{const response=await api('/runs/'+runId+'/files/'+encodeURIComponent(file));const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download=file;link.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}catch(error){notice(error.message);}};$('files').append(button);}
+  for(const file of data.files){if(/\.(png|jpe?g|webp)$/i.test(file)&&!seenImages.has(file)){try{await imageFile(file);}catch{}}const button=document.createElement('button');button.textContent='↓ '+file;button.onclick=async()=>{try{const response=await api('/runs/'+runId+'/files/'+encodeURIComponent(file));const url=URL.createObjectURL(await response.blob());const link=document.createElement('a');link.href=url;link.download=file;link.click();setTimeout(()=>URL.revokeObjectURL(url),10000);}catch(error){notice(error.message);}};$('files').append(button);}
 }
 
+async function loadRunHistory(){
+  try{const data=await json('/runs/history');const select=$('run-history');select.replaceChildren(new Option('Recent runs...',''));
+    for(const entry of data.runs){select.append(new Option(entry.status+' | '+entry.model+' | '+entry.prompt.slice(0,55),entry.id));}
+    select.value=runId||'';
+  }catch{}
+}
+$('run-history').onchange=async()=>{if(polling){notice('Stop or finish the active run before switching history.');$('run-history').value=runId;return;}if($('run-history').value){await reattach($('run-history').value);remember(runId);}};
 /* ---------- wiring ---------- */
 $('brief-form').onsubmit=event=>{event.preventDefault();start();};
 $('demo').onclick=()=>start(true);
@@ -311,6 +321,13 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
   busy(true);$('stop').hidden=true;
   try{
     const session=await (await fetch('/api/session')).json();token=session.token;
+    if(session.features?.includes('live_scene')){
+      try{const module=await import('/viewer.bundle.js');liveViewer=module.mountViewer({api});}catch{$('live-status').textContent='3D viewer unavailable; saved images remain available.';}
+    }else{
+      $('live-status').textContent='Restart the Astra server: this interface needs the Live 3D backend from version 0.2 or newer.';
+      $('live-status').classList.add('warn');$('live-toggle').disabled=true;$('live-tools').hidden=true;
+    }
+    await loadRunHistory();
     const data=await json('/models',undefined,'GET');providers=data.providers;
     fillProviders();$('provider').value='openai';fillModels('openai');
     // Reapply the setup last used, so a reload keeps working against the same
@@ -333,7 +350,7 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
     if(stopped){
       offerContinue(stopped.id,'↻ Continue last run');
       notice('A previous run stopped in '+stopped.stage+' after '+stopped.steps+
-        ' turns and its scene is still in Blender. Press Continue last run, beside Studio activity, '+
+        ' turns. Keep its intended scene open in Blender. Press Continue last run, beside Studio activity, '+
         'to carry on — raise the budgets first if it ran out of them.');
     }
   }catch{notice('Cannot reach the local Astra server. Start astra-blender serve and reload.');}

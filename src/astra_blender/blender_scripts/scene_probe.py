@@ -1,0 +1,180 @@
+"""Trusted read-only bpy probe. Executed inside Blender, never imported by the server."""
+
+import math
+
+import bpy
+from mathutils import Vector
+
+
+def _numbers(values):
+    return [round(float(v), 5) if math.isfinite(float(v)) else 0.0 for v in values]
+
+
+def _material(mat):
+    base = [0.55, 0.58, 0.62, 1]
+    data = {
+        "name": mat.name if mat else "Default",
+        "color": base[:3],
+        "roughness": 0.5,
+        "metallic": 0,
+        "opacity": 1,
+    }
+    if mat:
+        base = list(mat.diffuse_color)
+        data["color"], data["opacity"] = base[:3], base[3]
+        if mat.use_nodes:
+            shader = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            if shader:
+                for socket, key in [
+                    ("Base Color", "color"),
+                    ("Roughness", "roughness"),
+                    ("Metallic", "metallic"),
+                    ("Alpha", "opacity"),
+                ]:
+                    value = shader.inputs.get(socket)
+                    if value:
+                        data[key] = (
+                            list(value.default_value)[:3] if key == "color" else float(value.default_value)
+                        )
+                transmission = shader.inputs.get("Transmission Weight") or shader.inputs.get("Transmission")
+                if transmission and transmission.default_value > 0.1:
+                    data["opacity"] = min(data["opacity"], 0.35)
+    return data
+
+
+def astra_scene_probe(geometry=False):
+    scene = bpy.context.scene
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    camera = scene.camera
+    objects, meshes, warnings = [], [], []
+    vertex_budget, triangle_budget = 45000, 60000
+    for index, instance in enumerate(depsgraph.object_instances):
+        obj = instance.object
+        if obj.hide_render or obj.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META"}:
+            continue
+        if len(objects) >= 250:
+            warnings.append("Scene preview limited to 250 visible objects/instances.")
+            break
+        matrix = instance.matrix_world.copy()
+        corners = [matrix @ Vector(corner) for corner in obj.bound_box]
+        low = [min(p[i] for p in corners) for i in range(3)]
+        high = [max(p[i] for p in corners) for i in range(3)]
+        center = (Vector(low) + Vector(high)) / 2
+        dimensions = [high[i] - low[i] for i in range(3)]
+        record = {
+            "id": str(index) + ":" + obj.name,
+            "name": obj.name,
+            "type": obj.type,
+            "bounds": [_numbers(low), _numbers(high)],
+            "center": _numbers(center),
+            "dimensions": _numbers(dimensions),
+            "materials": [slot.material.name for slot in obj.material_slots if slot.material],
+        }
+        if camera and camera.data.type in {"PERSP", "ORTHO"}:
+            projected = [astra_project(scene, camera, p) for p in corners]  # noqa: F821 - supplied by the trusted script builder
+            projected_center = astra_project(scene, camera, center)  # noqa: F821 - supplied by the trusted script builder
+            record["camera"] = {
+                "center": _numbers(projected_center),
+                "bounds": [
+                    _numbers([min(p.x for p in projected), min(p.y for p in projected)]),
+                    _numbers([max(p.x for p in projected), max(p.y for p in projected)]),
+                ],
+                "corners_in_frame": sum(
+                    camera.data.clip_start < p.z < camera.data.clip_end and 0 <= p.x <= 1 and 0 <= p.y <= 1
+                    for p in projected
+                ),
+                "center_in_frame": bool(
+                    projected_center.z > 0 and 0 <= projected_center.x <= 1 and 0 <= projected_center.y <= 1
+                ),
+                "behind_camera": all(p.z <= 0 for p in projected),
+            }
+        objects.append(record)
+        if not geometry:
+            continue
+        entry = {
+            **record,
+            "matrix": _numbers([matrix[r][c] for c in range(4) for r in range(4)]),
+            "materials": [_material(slot.material) for slot in obj.material_slots] or [_material(None)],
+        }
+        mesh = None
+        try:
+            mesh = obj.to_mesh()
+            if not mesh or not mesh.vertices:
+                continue
+            if len(mesh.vertices) > vertex_budget or len(mesh.polygons) * 2 > triangle_budget:
+                entry["proxy"] = True
+            else:
+                mesh.calc_loop_triangles()
+                if len(mesh.loop_triangles) > triangle_budget:
+                    entry["proxy"] = True
+                else:
+                    entry["positions"] = _numbers([v for vertex in mesh.vertices for v in vertex.co])
+                    entry["triangles"] = [v for tri in mesh.loop_triangles for v in tri.vertices]
+                    entry["material_indices"] = [tri.material_index for tri in mesh.loop_triangles]
+                    entry["normals"] = _numbers(
+                        [
+                            value
+                            for tri in mesh.loop_triangles
+                            for loop in tri.loops
+                            for value in mesh.corner_normals[loop].vector
+                        ]
+                    )
+                    vertex_budget -= len(mesh.vertices)
+                    triangle_budget -= len(mesh.loop_triangles)
+            meshes.append(entry)
+        finally:
+            if mesh:
+                obj.to_mesh_clear()
+    if any(mesh.get("proxy") for mesh in meshes):
+        warnings.append("Dense objects are shown as bounding-box proxies to keep Blender responsive.")
+    camera_info = None
+    if camera:
+        if camera.data.type not in {"PERSP", "ORTHO"}:
+            warnings.append(
+                "Camera projection checks and browser camera view require perspective or orthographic mode."
+            )
+        quaternion = camera.matrix_world.to_quaternion()
+        camera_info = {
+            "name": camera.name,
+            "position": _numbers(camera.matrix_world.translation),
+            "quaternion": _numbers(quaternion[1:]) + [round(quaternion[0], 6)],
+            "type": camera.data.type,
+            "lens": camera.data.lens,
+            "fov": math.degrees(camera.data.angle_y),
+            "ortho_scale": camera.data.ortho_scale,
+            "shift": [camera.data.shift_x, camera.data.shift_y],
+            "clip": [camera.data.clip_start, camera.data.clip_end],
+            "view_frame": [_numbers(v) for v in camera.data.view_frame(scene=scene)],
+        }
+    sockets = []
+    for mat in bpy.data.materials:
+        if mat.use_nodes:
+            shader = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            if shader:
+                sockets = [socket.name for socket in shader.inputs]
+                break
+    return {
+        "schema_version": 1,
+        "scene": scene.name,
+        "source_file": bpy.path.basename(bpy.data.filepath) if bpy.data.filepath else "Unsaved scene",
+        "frame": scene.frame_current,
+        "blender_version": bpy.app.version_string,
+        "objects": objects,
+        "meshes": meshes,
+        "camera": camera_info,
+        "warnings": warnings,
+        "render": {
+            "engine": scene.render.engine,
+            "resolution": [scene.render.resolution_x, scene.render.resolution_y],
+            "percentage": scene.render.resolution_percentage,
+            "pixel_aspect": [scene.render.pixel_aspect_x, scene.render.pixel_aspect_y],
+        },
+        "capabilities": {
+            "principled_inputs": sockets,
+            "view_settings_location": "bpy.context.scene.view_settings",
+            "collection_membership": "object.users_collection (not object.data.collections)",
+            "eevee_properties": [p.identifier for p in scene.eevee.bl_rna.properties]
+            if hasattr(scene, "eevee")
+            else [],
+        },
+    }

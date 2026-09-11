@@ -14,9 +14,10 @@ from pydantic import Field as PydField
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import catalog, profiles
-from .bridge import connect, discover
+from .bridge import discover
 from .config import MCPConfig, RunConfig, validate_api_base
 from .engine import TERMINAL, Run, execute, result_parts
+from .live import BlenderHub, LiveScene
 
 RUN_ID = re.compile(r"^[0-9a-f]{32}$")
 
@@ -36,7 +37,9 @@ class ArchivedRun:
         self.approvals = {}
         self.task = None
         manifest = _read_json(directory / "manifest.json") or {}
-        self.status = manifest.get("status", "unknown")
+        self.status = manifest.get("status", "interrupted")
+        if self.status not in TERMINAL:
+            self.status = "interrupted"
         self.steps = manifest.get("steps", 0)
         self.total_tokens = manifest.get("total_tokens", 0)
         self.events = []
@@ -74,6 +77,8 @@ def create_app(config=None, output=None):
     token = secrets.token_urlsafe(32)
     runs = {}
     busy = asyncio.Lock()
+    hub = BlenderHub(config)
+    live_scene = LiveScene(hub)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -82,6 +87,8 @@ def create_app(config=None, output=None):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await live_scene.close()
+        await hub.close()
 
     app = FastAPI(title="Astra Blender Harness", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.runs = runs
@@ -127,7 +134,7 @@ def create_app(config=None, output=None):
 
     @app.get("/api/session")
     async def session():
-        return {"token": token, "transport": config.transport, "version": "0.1.0"}
+        return {"token": token, "transport": config.transport, "version": "0.2.0", "features": ["live_scene"]}
 
     @app.post("/api/doctor", dependencies=[Depends(auth)])
     async def doctor():
@@ -136,7 +143,7 @@ def create_app(config=None, output=None):
         async with busy:
             try:
                 async with asyncio.timeout(30):
-                    async with connect(config) as client:
+                    async with hub.connection() as client:
                         tools = await discover(client, config.allowed_tools)
                         arguments = (
                             {"user_prompt": "Check Blender connection"}
@@ -151,6 +158,10 @@ def create_app(config=None, output=None):
                 raise HTTPException(
                     503, "Cannot reach Blender. Check the MCP command, add-on and its Start button."
                 )
+
+    @app.get("/api/scene/live", dependencies=[Depends(auth)])
+    async def live(revision: str | None = Query(default=None, max_length=32)):
+        return await live_scene.read(revision)
 
     @app.get("/api/models", dependencies=[Depends(auth)])
     async def model_catalog():
@@ -221,7 +232,7 @@ def create_app(config=None, output=None):
 
                 await execute(run, config, provider=DemoProvider(), connector=demo_connect)
             else:
-                await execute(run, config, state=state)
+                await execute(run, config, state=state, connector=hub.connection)
 
     def start(settings, demo=False, state=None):
         if busy.locked() or any(r.status not in TERMINAL for r in runs.values()):
@@ -274,10 +285,13 @@ def create_app(config=None, output=None):
             saved, manifest = directory / "state.json", directory / "manifest.json"
             if not saved.is_file():
                 continue
-            data, info = _read_json(saved), _read_json(manifest)
-            if data is None or info is None:
+            data, info = _read_json(saved), _read_json(manifest) or {}
+            if data is None or not RUN_ID.fullmatch(directory.name):
                 continue
-            status, model = info.get("status"), info.get("model")
+            active = runs.get(directory.name)
+            if active and active.status not in TERMINAL:
+                continue
+            status, model = info.get("status", "interrupted"), info.get("model", data.get("model"))
             # A demo run has no real scene behind it, so continuing one against
             # a live Blender would replay a simulated conversation.
             if status == "completed" or model == "demo/scripted":
@@ -296,6 +310,31 @@ def create_app(config=None, output=None):
             )
         found.sort(key=lambda entry: entry["updated"], reverse=True)
         return {"runs": found[:20]}
+
+    @app.get("/api/runs/history", dependencies=[Depends(auth)])
+    async def history():
+        found = []
+        for directory in output.iterdir() if output.is_dir() else []:
+            if not RUN_ID.fullmatch(directory.name):
+                continue
+            manifest = _read_json(directory / "manifest.json") or {}
+            state = _read_json(directory / "state.json") or {}
+            if not manifest and not state and directory.name not in runs:
+                continue
+            active = runs.get(directory.name)
+            found.append(
+                {
+                    "id": directory.name,
+                    "status": active.status if active else manifest.get("status", "interrupted"),
+                    "model": active.config.model
+                    if active
+                    else manifest.get("model", state.get("model", "unknown")),
+                    "prompt": state.get("prompt", active.config.prompt if active else ""),
+                    "updated": directory.stat().st_mtime,
+                }
+            )
+        found.sort(key=lambda item: item["updated"], reverse=True)
+        return {"runs": found[:50]}
 
     @app.get("/api/runs/{run_id}", dependencies=[Depends(auth)])
     async def state(run_id: str, after: int = Query(default=0, ge=0)):

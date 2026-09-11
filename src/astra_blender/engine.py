@@ -8,8 +8,10 @@ from pathlib import Path
 
 from jsonschema import ValidationError, validate
 
+from . import spatial
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig
+from .history import repair_history
 from .prompts import STAGES, SYSTEM
 from .provider import LiteLLMProvider, parse_json_action
 
@@ -27,7 +29,7 @@ def budget(value):
 
 def _build_share(config):
     """Turns the build phase may use when no explicit cap is set."""
-    return UNCAPPED if not config.max_steps else max(2, config.max_steps // 2)
+    return UNCAPPED
 
 
 def without_images(messages):
@@ -43,7 +45,7 @@ def without_images(messages):
     return lean
 
 
-READ_ONLY = {"get_scene_info", "get_object_info", "get_viewport_screenshot"}
+READ_ONLY = {"get_scene_info", "get_object_info", "get_viewport_screenshot", "astra_inspect_scene"}
 TERMINAL = {"completed", "failed", "cancelled", "budget_exhausted"}
 
 
@@ -113,12 +115,15 @@ class Run:
             "total_tokens": self.total_tokens,
             "prompt": self.config.prompt,
             "quality": self.config.quality,
+            "model": self.config.model,
             "messages": without_images(messages),
         }
         try:
-            (self.directory / "state.json").write_text(
+            temporary = self.directory / "state.tmp"
+            temporary.write_text(
                 json.dumps(self.clean(state), ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            temporary.replace(self.directory / "state.json")
         except OSError:
             pass
 
@@ -273,6 +278,7 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
 
 
 async def _loop(run, session, tools, provider, state=None):
+    tools = {**tools, **{tool.name: tool for tool in spatial.tools()}}
     messages = [
         {"role": "system", "content": SYSTEM},
         {
@@ -283,7 +289,9 @@ async def _loop(run, session, tools, provider, state=None):
     if state:
         # A resumed run inherits the earlier conversation, which carries the
         # plan and what was already built.
-        messages = list(state.get("messages") or [])
+        messages = repair_history(state.get("messages") or [], vision=run.config.vision)
+        if messages and messages[0].get("role") == "system":
+            messages[0] = {"role": "system", "content": SYSTEM}
         messages.append(
             {
                 "role": "user",
@@ -292,6 +300,17 @@ async def _loop(run, session, tools, provider, state=None):
                 "there. Do not rebuild what exists. New output_dir: " + run.directory.as_posix(),
             }
         )
+    messages.append(
+        {
+            "role": "user",
+            "content": "Model vision is "
+            + (
+                "enabled. Request viewport images when useful."
+                if run.config.vision
+                else "DISABLED. Use astra_inspect_scene for spatial evidence. Never claim to see images. The human has an independent live 3D viewer."
+            ),
+        }
+    )
     run.messages = messages
     image_count = 0
 
@@ -299,6 +318,11 @@ async def _loop(run, session, tools, provider, state=None):
         nonlocal image_count
         if name not in tools:
             return "TOOL ERROR: tool is unavailable or not allowed", []
+        if name == "get_viewport_screenshot" and not run.config.vision:
+            return (
+                "TOOL ERROR: vision disabled; use astra_inspect_scene. The human live viewer is independent.",
+                [],
+            )
         if readonly and name not in READ_ONLY:
             return "TOOL ERROR: this phase is read-only", []
         properties = tools[name].inputSchema.get("properties", {})
@@ -317,8 +341,25 @@ async def _loop(run, session, tools, provider, state=None):
             return "TOOL ERROR: user denied this action; do not repeat it", []
         run.emit("tool_call", tool=name, arguments=args, internal=internal)
         # Do not automatically retry a mutation: its result may be uncertain after timeout.
-        result = await session.call_tool(name, args)
-        text, images = result_parts(result)
+        if name in {"astra_inspect_scene", "astra_frame_camera"}:
+            code = spatial.probe_code() if name == "astra_inspect_scene" else spatial.frame_code(args)
+            backend_args = {"code": code}
+            if "user_prompt" in tools["execute_blender_code"].inputSchema.get("properties", {}):
+                backend_args["user_prompt"] = run.config.prompt
+            result = await session.call_tool("execute_blender_code", backend_args)
+            text, images = result_parts(result)
+            if name == "astra_inspect_scene" and not text.startswith("TOOL ERROR:"):
+                report = spatial.diagnostics(spatial.parse_probe(result))
+                text = json.dumps(report, ensure_ascii=False)
+                (run.directory / "quality.json").write_text(run.clean(text), encoding="utf-8")
+                run.emit(
+                    "quality",
+                    issues=report["issues"],
+                    message=str(len(report["issues"])) + " scene checks need review",
+                )
+        else:
+            result = await session.call_tool(name, args)
+            text, images = result_parts(result)
         failed = text.startswith("TOOL ERROR:")
         run.emit("tool_result", tool=name, text=text, is_error=failed)
         if internal and failed:
@@ -344,11 +385,12 @@ async def _loop(run, session, tools, provider, state=None):
     async def evidence():
         text, _ = await call("get_scene_info", {}, internal=True)
         messages.append({"role": "user", "content": "Scene evidence:\n" + text})
-        text, images = await call("get_viewport_screenshot", {}, internal=True)
-        content = [{"type": "text", "text": "Current Blender viewport. " + text}] + images
-        if not run.config.vision:
-            content = "Viewport saved for human review. Model vision is disabled. " + text
-        messages.append({"role": "user", "content": content})
+        text, _ = await call("astra_inspect_scene", {}, internal=True)
+        messages.append({"role": "user", "content": "Numerical scene audit:\n" + text})
+        if run.config.vision:
+            text, images = await call("get_viewport_screenshot", {}, internal=True)
+            content = [{"type": "text", "text": "Current Blender viewport. " + text}] + images
+            messages.append({"role": "user", "content": content})
 
     async def save(filename):
         if getattr(session, "simulated", False):
@@ -385,7 +427,8 @@ async def _loop(run, session, tools, provider, state=None):
                 function=dict(name=t.name, description=t.description or t.name, parameters=t.inputSchema),
             )
             for t in tools.values()
-            if not readonly or t.name in READ_ONLY
+            if (not readonly or t.name in READ_ONLY)
+            and (run.config.vision or t.name != "get_viewport_screenshot")
         ]
         if run.config.tool_mode == "json":
             messages.append(
@@ -395,19 +438,38 @@ async def _loop(run, session, tools, provider, state=None):
                     'or {"done":"phase summary"}. Available tools: ' + json.dumps(offered),
                 }
             )
-        # Reserve at least one model turn for every remaining phase.
-        remaining = len(stages) - [s[0] for s in stages].index(stage) - 1
+        # Mutation phases need an action turn and a turn to assess its result.
+        later = stages[[s[0] for s in stages].index(stage) + 1 :]
+        remaining = sum(1 if name in {"plan", "review"} else 2 for name, _ in later)
         total = budget(run.config.max_steps)
         phase_limit = max(1, total - run.steps - remaining)
         if stage in {"plan", "review"}:
             phase_limit = min(phase_limit, run.config.inspect_max_steps)
         elif stage == "build":
             phase_limit = min(phase_limit, run.config.build_max_steps or _build_share(run.config))
-        for _ in range(phase_limit):
+        for phase_turn in range(phase_limit):
             if run.steps >= total or run.total_tokens >= budget(run.config.max_total_tokens):
                 raise BudgetExceeded(
                     "Model-turn or token budget reached; the scene is incomplete. "
                     "Continue this run, or raise the budgets and start again."
+                )
+            phase_capped = (
+                run.config.max_steps or readonly or (stage == "build" and run.config.build_max_steps)
+            )
+            if phase_capped or run.config.max_total_tokens:
+                turns_left = str(phase_limit - phase_turn) if phase_capped else "unlimited"
+                tokens_left = (
+                    str(max(0, run.config.max_total_tokens - run.total_tokens))
+                    if run.config.max_total_tokens
+                    else "unlimited"
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Budget reminder: {turns_left} model turns remain in this phase, including this response. "
+                        f"Reported-token allowance left: {tokens_left}. Reserve a response to assess tool results "
+                        "and finish the phase. Prioritize the brief, spatial correctness and camera over extra detail.",
+                    }
                 )
             run.steps += 1
             message, usage = await provider.complete(messages, offered)
@@ -434,8 +496,19 @@ async def _loop(run, session, tools, provider, state=None):
                 if message.get("content"):
                     run.emit("assistant", text=message["content"])
                 if not calls:
+                    if not str(message.get("content") or "").strip():
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": "Empty response. Return a tool action or a useful phase summary.",
+                            }
+                        )
+                        run.emit("repair", message="Requested a non-empty phase result")
+                        continue
                     break
             images = []
+            mutated = False
+            run.save_state(messages, stage)
             for index, tool_call in enumerate(calls):
                 function = tool_call["function"]
                 try:
@@ -455,10 +528,17 @@ async def _loop(run, session, tools, provider, state=None):
                         {"role": "user", "content": "Tool result:\n" + (text or "Image captured")}
                     )
                 images.extend(pictures)
+                # Failed Python may have changed half the scene before raising.
+                mutated |= function["name"] in tools and function["name"] not in READ_ONLY and not readonly
+                run.save_state(messages, stage)
             if images:
                 messages.append(
                     {"role": "user", "content": [{"type": "text", "text": "Tool image evidence"}] + images}
                 )
+            if mutated:
+                audit, _ = await call("astra_inspect_scene", {}, internal=True)
+                messages.append({"role": "user", "content": "After-edit spatial checks:\n" + audit})
+            run.save_state(messages, stage)
             # Retain only the latest image-bearing message; keep all text/tool pairs intact.
             seen_image = False
             for old in reversed(messages):
@@ -471,9 +551,11 @@ async def _loop(run, session, tools, provider, state=None):
         else:
             raise BudgetExceeded(
                 f"Phase '{stage}' used all its model turns; the scene is incomplete. "
-                "Raise Maximum model turns and run again: build gets half of that total."
+                "Continue with a larger total or per-phase budget. Automatic build budgeting reserves turns for finishing."
             )
         if stage in {"build", "refine"}:
             await evidence()
             await save(f"{stage}.blend")
+    audit, _ = await call("astra_inspect_scene", {}, internal=True)
+    messages.append({"role": "user", "content": "Final scene audit:\n" + audit})
     await save("scene.blend")

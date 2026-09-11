@@ -13,3 +13,5 @@ runs/
 *.blend1
 *.png
 !docs/*.png
+
+node_modules/
