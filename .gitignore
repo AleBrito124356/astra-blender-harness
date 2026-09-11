@@ -7,8 +7,11 @@ dist/
 build/
 .env
 config.local.json
+mcp.local.json
 runs/
 *.blend
 *.blend1
 *.png
 !docs/*.png
+
+node_modules/

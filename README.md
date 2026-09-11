@@ -4,11 +4,11 @@
 
 **Bring your model. Build in Blender. See what actually happened.**
 
-A local studio and CLI that connects API models to [Blender MCP](https://github.com/ahujasid/blender-mcp). It discovers real tools, builds in small steps, captures viewport evidence, asks the model to critique the scene, refines it, and saves scene copies. Your API key stays in memory; there is no Astra account or hosted proxy.
+A local studio and CLI that connects API models to [Blender MCP](https://github.com/ahujasid/blender-mcp). It discovers real tools, builds in small steps, streams evaluated geometry to an interactive 3D workspace, collects numerical scene evidence (plus viewport images for vision models), asks the model to critique the scene, refines it, and saves scene copies. There is no Astra account or hosted proxy. Your API key stays in memory by default; if you choose to save a setup, the key goes to your operating system keyring and never to a file.
 
 ![Astra Blender Studio](docs/studio.png)
 
-> Early release. Tested with a real Blender 4.5.9 session and official Blender MCP 1.9.1, plus automated protocol and agent tests. Model/provider quality is not benchmarked yet. Model compatibility is not a promise that every model can produce excellent 3D.
+> Early release. Tested with real Blender 4.5.9 and 5.2.1 sessions and official Blender MCP 1.9.1, plus automated protocol, agent and browser tests. Model/provider quality is not benchmarked yet. Model compatibility is not a promise that every model can produce excellent 3D.
 
 ## Start here
 
@@ -20,7 +20,7 @@ cd astra-blender-harness
 python -m venv .venv
 # Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
-python -m pip install -e .
+python -m pip install -e '.[keyring]'   # plain '.' also works; the key is then not remembered
 astra-blender serve
 ```
 
@@ -31,13 +31,25 @@ Use **Demo** to explore the full workflow without a key or Blender. Demo evidenc
 ## What is implemented
 
 - Real MCP SDK client: stdio and Streamable HTTP, paginated discovery, JSON Schema validation.
-- [LiteLLM](https://docs.litellm.ai/docs/providers) provider routing: OpenAI, Anthropic, Gemini, OpenRouter, Ollama and compatible endpoints. Use any supported `provider/model` identifier.
+- [LiteLLM](https://docs.litellm.ai/docs/providers) provider routing: OpenAI, Anthropic, Gemini, DeepSeek, OpenRouter, NVIDIA NIM, Ollama and compatible endpoints. Use any supported `provider/model` identifier.
+- Model picker built from the installed LiteLLM catalog, showing tool-calling and vision support per model. A wrong identifier is caught in the form instead of failing on the first model turn.
+- Live model discovery for any OpenAI-compatible provider: ask the endpoint what it serves and get identifiers already prefixed for LiteLLM. Built for gateways such as NVIDIA NIM, whose model IDs (`deepseek-ai/deepseek-v4-pro-0813`) no static catalog tracks.
+- Saved setups: provider, model, API base and defaults in a local config file; the API key only in the OS keyring, never in that file. Install with the `keyring` extra to enable it.
 - Native tool calls, plus a strict JSON-action mode for text models without native tool use. Malformed responses get bounded repair attempts.
-- Plan → build → review → refine → finalize. Read-only planning/review, mandatory scene/viewport evidence and `.blend` checkpoints. Draft skips refinement.
-- Optional visual feedback. Text-only models still receive scene information; humans can inspect saved viewport images.
+- Plan → build → review → refine → finalize. Read-only planning/review, mandatory numerical scene evidence and optional vision captures and `.blend` checkpoints. Draft skips refinement.
+- Large live 3D workspace: orbit, zoom, inspect/focus objects, wireframe, pause sync and Blender render-camera view. Geometry updates about every two seconds when Blender is free; navigation stays independent of the model.
+- Numerical feedback for every model: world bounds, dimensions, camera coverage, material assignments, containment hints and actual Blender API capabilities. Text-only runs request no screenshots. Vision models receive additional viewport PNG evidence.
+- Camera-fitting tool with explicit subjects and margins. After-edit audits include partial edits from failed Python scripts; each run saves `quality.json`.
 - Sequential Blender operations, approval queue, cancellation, deadlines, turn/token limits and no automatic mutation retries.
+- The run deadline pauses while an approval waits for you. Review time is yours, not the model's; the wait is reported separately as `awaiting_approval_seconds`.
+- Every budget is editable, and a budget of `0` removes that limit: turns, tokens and wall clock alike. The per-phase caps are settings too, not hidden constants; the build phase used to get half the total turns with no way to say otherwise.
+- Reloading the page no longer costs anything: the studio reattaches to the last run, replays its trace, images and files from disk, and if the run is still going it keeps polling with its approval buttons live. Past runs are served from `runs/` even after Astra restarts.
+- Continue a run that stopped early. Its conversation is saved to `state.json` and the scene it built is still in Blender, so a resumed run picks up at the phase it left, re-inspects, and carries on with a fresh budget. Resumable runs are read from disk, so they survive restarting Astra.
 - Live activity, viewport gallery, downloadable manifests, trace and scene files. No fabricated success status when the run fails or exhausts its budget.
 - Runs saved to `./runs/<id>/`. The harness copies scenes rather than overwriting the original `.blend`.
+- Resizable viewport panel with an expand mode, and a configurable capture size. Note that `max_size` only downscales: the real resolution is the size of your 3D viewport area inside Blender.
+
+See [live scene details and limits](docs/live-scene.md) and the [0.2.0 changelog](CHANGELOG.md). Preview materials use simplified shading; textures, lighting and compositing must be judged in the final Blender render. The 3D view is synchronized geometry, not a native Blender window.
 
 ## Recommended starting models
 
@@ -55,7 +67,7 @@ Recommendations below are engineering starting points based on documented tool/v
 
 Sources: [OpenAI model catalog](https://developers.openai.com/api/docs/models/all), [Anthropic model comparison](https://platform.claude.com/docs/en/models/overview), [Gemini catalog](https://ai.google.dev/gemini-api/docs/models), [LiteLLM providers](https://docs.litellm.ai/docs/providers).
 
-If a model rejects tool declarations, select **JSON actions**. If it rejects images, disable **Vision feedback**. Embedding, audio-only and image-generation-only models cannot run this harness. A custom API with an incompatible protocol needs a LiteLLM adapter; an API key alone cannot make every endpoint compatible. New model IDs may require a newer LiteLLM version. Do not infer API access from a chat subscription.
+Use **↻** beside the model list to ask your provider directly; this is the reliable route for a gateway whose identifiers are long or versioned. If a model rejects tool declarations, select **JSON actions**. If it rejects images, disable **Vision feedback**. Embedding, audio-only and image-generation-only models cannot run this harness. A custom API with an incompatible protocol needs a LiteLLM adapter; an API key alone cannot make every endpoint compatible. New model IDs may require a newer LiteLLM version. Do not infer API access from a chat subscription.
 
 ## CLI
 
@@ -95,6 +107,9 @@ python -m pip install -e '.[dev]'
 python -m pytest
 python -m ruff check src tests
 python -m build
+# Only when editing the browser viewer (the built bundle is included):
+npm ci
+npm run build
 ```
 
 Tests do not spend API credits. To enable GitHub Actions, copy `docs/github-actions.yml` to `.github/workflows/ci.yml` and push with a credential that has workflow permission. See [validation notes](docs/validation.md) for what was actually exercised. MIT licensed. Independent project by Alejandro Brito; not affiliated with Blender, OpenAI, Anthropic, Google or the Blender MCP authors.

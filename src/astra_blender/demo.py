@@ -56,6 +56,23 @@ class DemoSession:
 
     async def call_tool(self, name, arguments):
         await asyncio.sleep(0.15)
+        if name == "execute_blender_code" and "ASTRA_SCENE_JSON:" in arguments.get("code", ""):
+            import json
+
+            snapshot = {
+                "schema_version": 1,
+                "scene": "Demo fixture",
+                "blender_version": "fixture",
+                "objects": [],
+                "meshes": [],
+                "camera": {"name": "Fixture camera"},
+                "warnings": [],
+                "render": {},
+                "capabilities": {},
+            }
+            return CallToolResult(
+                content=[TextContent(type="text", text="ASTRA_SCENE_JSON:" + json.dumps(snapshot))]
+            )
         if name == "get_viewport_screenshot":
             return CallToolResult(
                 content=[
