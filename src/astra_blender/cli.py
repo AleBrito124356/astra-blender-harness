@@ -2,11 +2,32 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
+import sys
 from pathlib import Path
 
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig
 from .engine import Run, execute, result_parts
+
+
+def fallback_transport(config):
+    """Use the interpreter's own blender-mcp when uvx is not installed.
+
+    The default transport spawns `uvx blender-mcp==1.9.1`. On a machine without
+    uv that fails at spawn time, and the studio can only report it as "Cannot
+    reach Blender" - even though blender-mcp is already installed as a
+    dependency right next to this interpreter. Explicit commands are respected.
+    """
+    if config.transport != "stdio" or config.command != "uvx" or shutil.which("uvx"):
+        return config
+    scripts = Path(sys.executable).parent
+    for name in ("blender-mcp.exe", "blender-mcp"):
+        candidate = scripts / name
+        if candidate.is_file():
+            print(f"uvx is not installed; using {candidate} instead")
+            return config.model_copy(update={"command": str(candidate), "args": []})
+    return config
 
 
 def main():
@@ -38,7 +59,7 @@ def main():
         command.add_argument("--config", type=Path)
         command.add_argument("--output", type=Path, default=Path("runs"))
     args = parser.parse_args()
-    config = (
+    config = fallback_transport(
         MCPConfig.model_validate_json(args.config.read_text(encoding="utf-8")) if args.config else MCPConfig()
     )
     if args.command == "serve":
