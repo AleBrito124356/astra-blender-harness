@@ -1,6 +1,5 @@
 """Trusted read-only bpy probe. Executed inside Blender, never imported by the server."""
 
-import hashlib
 import math
 from array import array
 
@@ -63,15 +62,34 @@ def astra_action_curves(obj):
     return list(action.fcurves) if hasattr(action, "fcurves") else []
 
 
+def astra_digest(value):
+    """A 16-hex-digit digest of a hashable value, without hashlib.
+
+    Upstream safe mode allows only bpy, bmesh, mathutils and pure-Python stdlib
+    imports; hashlib is not among them, the hash() builtin is. It is stable
+    within one Blender process, which is exactly the lifetime a change
+    detector needs: a Blender restart simply re-sends everything once.
+    """
+    return format(hash(value) & 0xFFFFFFFFFFFFFFFF, "016x")
+
+
 def astra_animation_fingerprint(animated):
-    digest = hashlib.sha1()
+    if not animated:
+        return ""
+    parts = []
     for obj in animated:
-        digest.update(obj.name.encode())
+        parts.append(obj.name)
         for curve in astra_action_curves(obj):
-            digest.update(f"{curve.data_path}[{curve.array_index}]".encode())
-            for point in curve.keyframe_points:
-                digest.update(f"{point.co.x:.3f}:{point.co.y:.5f}:{point.interpolation}".encode())
-    return digest.hexdigest()[:16] if animated else ""
+            parts.append(
+                (
+                    curve.data_path,
+                    curve.array_index,
+                    tuple(
+                        (round(p.co.x, 3), round(p.co.y, 5), p.interpolation) for p in curve.keyframe_points
+                    ),
+                )
+            )
+    return astra_digest(tuple(parts))
 
 
 def astra_geometry_hash(obj, materials):
@@ -80,19 +98,20 @@ def astra_geometry_hash(obj, materials):
     data = obj.data
     if obj.type != "MESH" or data is None or not hasattr(data, "vertices"):
         return None
-    digest = hashlib.sha1()
-    digest.update(
-        repr(
-            [(m["name"], m["color"], m["roughness"], m["metallic"], m["opacity"]) for m in materials]
-        ).encode()
-    )
     count = len(data.vertices)
     coords = array("f", [0.0]) * (count * 3)
     if count:
         data.vertices.foreach_get("co", coords)
-    digest.update(coords.tobytes())
-    digest.update(f"{count}:{len(data.polygons)}".encode())
-    return digest.hexdigest()
+    return astra_digest(
+        (
+            count,
+            len(data.polygons),
+            hash(coords.tobytes()),
+            tuple(
+                (m["name"], tuple(m["color"]), m["roughness"], m["metallic"], m["opacity"]) for m in materials
+            ),
+        )
+    )
 
 
 def astra_scene_probe(geometry=False, known=None):
