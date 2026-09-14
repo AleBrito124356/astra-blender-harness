@@ -106,7 +106,11 @@ async def _doctor(config):
 
 
 async def _run(settings, config, output, reference_paths=()):
-    from . import references
+    from . import catalog, references
+
+    problem = catalog.routing_problem(settings.model, settings.api_base)
+    if problem:
+        raise SystemExit(problem)
 
     if len(reference_paths) > 3:
         raise ValueError("Use at most three reference images")

@@ -23,6 +23,8 @@ El timeline del visor hornea las matrices de la animación en una sola lectura y
 
 ## Resultados de una ejecución
 
+Un identificador de modelo que LiteLLM no sabe enrutar se rechaza **antes** de arrancar, diciendo cuál usar: lo que muestra la página de un proveedor (`moonshotai/kimi-k3`) necesita el proveedor delante (`nvidia_nim/moonshotai/kimi-k3`) o una URL base. Si el proveedor falla, el mensaje nombra su código HTTP y qué hacer —un modelo retirado se lee como 410—; su cuerpo no entra en la traza y queda en `error.log`.
+
 `completed`, `incomplete` (la escena está construida y guardada pero falta un entregable pedido —por ahora, una animación sin keyframes— y se puede continuar), `budget_exhausted`, `cancelled` y `failed`. Las palabras de movimiento en el brief son solo una pista: únicamente «Animate» exige keyframes. Cada ejecución guarda en `runs/<id>/` copias `.blend` por fase (nunca sobrescribe tu archivo), capturas, `quality.json`, `animation.json`, las fotos de referencia normalizadas, `state.json` para continuar, la traza `events.jsonl` con la clave redactada, `manifest.json` y `error.log` si falló.
 
 ## Inicio rápido

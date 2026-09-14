@@ -96,6 +96,35 @@ def routable(provider: str, identifier: str) -> str:
     return f"openai/{identifier}"
 
 
+NOT_ROUTABLE = (
+    "Model '{model}' has no provider LiteLLM recognises, so the run would fail on its first model "
+    "turn - after Blender has already been read and checkpointed. Identifiers copied from a "
+    "provider's own page usually need the provider in front: '{provider}/{model}' for NVIDIA NIM, "
+    "'openrouter/{model}' for OpenRouter. Setting the API base URL also works, because LiteLLM "
+    "then infers the provider from it. Use the refresh button beside the model list to fetch exact "
+    "identifiers from your provider."
+)
+
+
+def routing_problem(model: str, api_base: str | None = None):
+    """Why LiteLLM cannot route this identifier, or None when it can.
+
+    Pasting what a provider's page shows - "moonshotai/kimi-k3",
+    "deepseek-ai/deepseek-v4-pro-0813" - is the natural thing to do and the
+    most common way a run dies on its first model turn. An API base is enough
+    on its own: LiteLLM infers the provider from the URL.
+    """
+    import litellm
+
+    if api_base or not model:
+        return None
+    try:
+        litellm.get_llm_provider(model=model)
+    except Exception:
+        return NOT_ROUTABLE.format(model=model, provider="nvidia_nim")
+    return None
+
+
 async def discover(provider: str, api_base: str | None, api_key: str):
     """List the models a provider actually serves, via its /models endpoint."""
     import httpx
