@@ -57,6 +57,51 @@ READ_ONLY = {
 TERMINAL = {"completed", "failed", "cancelled", "budget_exhausted", "incomplete"}
 
 
+# What an HTTP status from a provider means for the person reading it. The
+# generic failure message used to send them to check five things at once,
+# while the provider's own answer - a model retired that morning, a rejected
+# key - sat in error.log unread.
+STATUS_HINTS = {
+    400: "The provider rejected the request.",
+    401: "The provider rejected the API key.",
+    403: "The provider refused access with this key. Check the key, its permissions, "
+    "and whether your account has access to this model.",
+    404: "The provider does not serve that model identifier.",
+    410: "The provider has retired that model. Pick a current one; the refresh button "
+    "beside the model list asks your provider what it serves today.",
+    429: "The provider's rate limit or quota was reached.",
+}
+
+GENERIC_FAILURE = (
+    "connection, provider or tool failed. Check your model ID, API credentials, MCP "
+    "configuration and Blender."
+)
+
+
+def provider_failure(cause):
+    """A failure message that names the status and what to do about it.
+
+    The provider's own body stays out of this: it can carry credentials or the
+    request payload, which is the project's standing promise and the reason
+    test_provider_failure_does_not_leak exists. The status code and exception
+    type are not bodies, and they are enough to act on - a model retired that
+    morning reads as 410, not as "check five things". The full redacted
+    traceback, body included, is written to error.log for when the status is
+    not enough.
+    """
+    status = getattr(cause, "status_code", None)
+    body = str(getattr(cause, "message", "") or cause)
+    if "LLM Provider NOT provided" in body:
+        hint = (
+            "Astra could not route that model identifier. Prefix it with the provider that serves it, "
+            "or set the API base URL."
+        )
+    else:
+        hint = STATUS_HINTS.get(status) or GENERIC_FAILURE
+    label = type(cause).__name__ + (f" {status}" if status else "")
+    return f"{label}: {hint} See error.log in this run's files for the provider's own message."
+
+
 class AnimationIncomplete(RuntimeError):
     pass
 
@@ -269,12 +314,7 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
             )
         else:
             run.status = "failed"
-            run.emit(
-                "failed",
-                message=f"{type(cause).__name__}: connection, provider or tool failed. "
-                "Check your model ID, API credentials, MCP configuration and Blender. "
-                "See error.log in this run's files for the redacted traceback.",
-            )
+            run.emit("failed", message=provider_failure(cause))
     finally:
         # Saved on success and failure alike: a run that stopped early is
         # exactly the one worth continuing.

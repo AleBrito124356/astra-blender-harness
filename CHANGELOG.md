@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 — 2026-09-14
+
+- Model identifiers LiteLLM cannot route are refused before the run starts, naming the prefixed form to use. Pasting what a provider's page shows was the most common way a run died on its first model turn, after Blender had already been read and checkpointed.
+- Provider failures name their HTTP status and what to do about it: 401/403 the key, 404 the identifier, 410 a retired model, 429 a quota. The provider's own body still stays out of the trace and goes to `error.log`.
+
 ## 0.3.0 — 2026-09-11
 
 - Reference photos: up to three PNG, JPEG or WebP images per run, normalized locally (EXIF removed, 1536 px, re-encoded as JPEG), sent to vision models as modeling targets and saved with the run. Carried over when a run is continued.

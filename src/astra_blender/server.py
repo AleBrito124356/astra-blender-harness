@@ -343,6 +343,9 @@ def create_app(config=None, output=None):
             remembered = profiles.load_secret(settings.profile)
             if remembered:
                 settings = settings.model_copy(update={"api_key": SecretStr(remembered)})
+        problem = await asyncio.to_thread(catalog.routing_problem, settings.model, settings.api_base)
+        if problem:
+            raise HTTPException(400, problem)
         state = load_state(settings.resume_from) if settings.resume_from else None
         if state:
             inherited = {
