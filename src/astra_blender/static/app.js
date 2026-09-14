@@ -233,7 +233,7 @@ async function start(demo=false){
     $('viewport-label').textContent=demo?'OFFLINE DEMO · ILLUSTRATION':liveViewer?.isLive()?'BLENDER / LIVE 3D':'BLENDER VIEWPORT';
     if(demo)notice('Demo mode: a scripted walkthrough with an illustration. No model API or Blender is connected, and no .blend file is created.');
     polling=true;await poll();
-  }catch(error){notice(error.message);busy(false);if(continueTarget)$('continue').hidden=false;}
+  }catch(error){notice(error.message);$('notice').scrollIntoView({block:'nearest'});busy(false);if(continueTarget)$('continue').hidden=false;}
 }
 async function imageFile(filename){
   if(filename.startsWith('reference-')||seenImages.has(filename))return;
@@ -345,6 +345,7 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
   busy(true);$('stop').hidden=true;
   try{
     const session=await (await fetch('/api/session')).json();token=session.token;
+    const stale=session.assets_newer_than_server;
     if(session.features?.includes('live_scene')){
       try{const module=await import('/viewer.bundle.js');liveViewer=module.mountViewer({api,timeline:session.features.includes('animation')});}catch{$('live-status').textContent='3D viewer unavailable; saved images remain available.';}
     }else{
@@ -373,6 +374,12 @@ window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault(
     const previous=remembered()||(stopped&&stopped.id);
     const live=previous?await reattach(previous):false;
     if(live)return;
+    if(stale){
+      // Nothing will start until the backend matches: say so before anything else.
+      notice('This page was loaded from files newer than the running server, so it will send settings the server rejects. Restart astra-blender serve and reload.');
+      $('notice').scrollIntoView({block:'nearest'});
+      return;
+    }
     if(stopped){
       offerContinue(stopped.id,'↻ Continue last run');
       notice('A previous run stopped in '+stopped.stage+' after '+stopped.steps+

@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -73,6 +74,11 @@ def _read_json(path):
 
 def create_app(config=None, output=None):
     config = config or MCPConfig()
+    static = Path(__file__).parent / "static"
+    # Static files are read from disk per request; the Python module is not.
+    # A git pull with the server running leaves the browser newer than the
+    # backend, and every run is then refused as an invalid request.
+    started_at = time.time()
     output = Path(output or "runs").resolve()
     token = secrets.token_urlsafe(32)
     runs = {}
@@ -113,10 +119,24 @@ def create_app(config=None, output=None):
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
-        # FastAPI's default error body can echo the API key from invalid input.
-        return JSONResponse(
-            {"detail": "Invalid request. Check field lengths, limits and endpoint URL."}, status_code=422
-        )
+        # Field names and error kinds only: FastAPI's default body echoes the
+        # submitted values, and one of them is the API key.
+        unexpected, invalid = [], []
+        for error in exc.errors():
+            name = ".".join(str(part) for part in error.get("loc", ()) if part != "body") or "body"
+            (unexpected if error.get("type") == "extra_forbidden" else invalid).append(name)
+        if unexpected:
+            detail = (
+                "This page sent settings the running server does not know: "
+                + ", ".join(sorted(set(unexpected))[:8])
+                + ". The interface files on disk are newer than the server process. "
+                "Restart astra-blender serve and reload."
+            )
+        elif invalid:
+            detail = "Check these fields: " + ", ".join(sorted(set(invalid))[:8]) + "."
+        else:
+            detail = "Invalid request. Check field lengths, limits and endpoint URL."
+        return JSONResponse({"detail": detail}, status_code=422)
 
     async def auth(x_astra_token: str = Header(default="")):
         if not secrets.compare_digest(x_astra_token, token):
@@ -132,9 +152,17 @@ def create_app(config=None, output=None):
             return ArchivedRun(run_id, directory)
         raise HTTPException(404, "No run with that id in this process or in runs/")
 
+    def assets_changed_after_start():
+        try:
+            newest = max((p.stat().st_mtime for p in static.rglob("*") if p.is_file()), default=0.0)
+        except OSError:
+            return False
+        return newest > started_at
+
     @app.get("/api/session")
     async def session():
         return {
+            "assets_newer_than_server": assets_changed_after_start(),
             "token": token,
             "transport": config.transport,
             "version": __version__,
@@ -470,6 +498,5 @@ def create_app(config=None, output=None):
             raise HTTPException(404, "File not found")
         return FileResponse(path, filename=path.name)
 
-    static = Path(__file__).parent / "static"
     app.mount("/", StaticFiles(directory=static, html=True), name="studio")
     return app

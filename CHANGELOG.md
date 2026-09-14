@@ -5,6 +5,8 @@
 - The per-turn model timeout is a setting (default 300 s, was a hard-coded 120 s). A 2.8T reasoning model on NVIDIA NIM spent longer than that thinking before its first token, and the run had no way to wait.
 - A timed-out turn is no longer retried. LiteLLM's own retry doubled the wait and the provider's bill for a generation that was discarded; transient connection and server errors are still retried once, as documented.
 - A timeout says which setting to raise instead of listing five things to check.
+- The studio notices when its own files on disk are newer than the running server - what a `git pull` with the server open leaves behind - and says to restart instead of refusing every run as an invalid request.
+- A rejected request names the fields it tripped on, by name only; values, including the API key, are still never echoed.
 
 ## 0.3.1 — 2026-09-14
 
