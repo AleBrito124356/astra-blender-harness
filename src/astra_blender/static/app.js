@@ -223,7 +223,7 @@ async function start(demo=false){
     const body={reference_ids:referencePhotos.map(p=>p.id),animation:$('animation-mode').value,animation_frames:Number($('animation-frames').value),animation_fps:Number($('animation-fps').value),prompt:$('prompt').value,model,api_key:$('api-key').value,profile:$('profile').value||null,
       api_base:$('api-base').value.trim()||null,quality:$('quality').value,tool_mode:$('tool-mode').value,
       vision:$('vision').checked,auto_approve:$('auto').checked,max_steps:Number($('steps').value),
-      max_output_tokens:Number($('output-tokens').value),max_total_tokens:Number($('tokens').value),timeout_seconds:Number($('timeout').value),
+      max_output_tokens:Number($('output-tokens').value),request_timeout:Number($('request-timeout').value),max_total_tokens:Number($('tokens').value),timeout_seconds:Number($('timeout').value),
       screenshot_max_size:Number($('shot').value),build_max_steps:Number($('build-steps').value),
       inspect_max_steps:Number($('inspect-steps').value),resume_from:$('resume').value||null};
     if(!demo&&!body.max_steps&&!body.max_total_tokens&&!body.timeout_seconds)
