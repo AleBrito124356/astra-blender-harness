@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jsonschema import ValidationError, validate
 
-from . import spatial
+from . import motion, references, spatial
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig
 from .history import repair_history
@@ -45,8 +45,20 @@ def without_images(messages):
     return lean
 
 
-READ_ONLY = {"get_scene_info", "get_object_info", "get_viewport_screenshot", "astra_inspect_scene"}
-TERMINAL = {"completed", "failed", "cancelled", "budget_exhausted"}
+READ_ONLY = {
+    "get_scene_info",
+    "get_object_info",
+    "get_viewport_screenshot",
+    "astra_inspect_scene",
+    "astra_inspect_animation",
+}
+# "incomplete": the scene was built and saved, but a requested deliverable
+# (so far, animation) is missing. Continuable, and not a failure of anything.
+TERMINAL = {"completed", "failed", "cancelled", "budget_exhausted", "incomplete"}
+
+
+class AnimationIncomplete(RuntimeError):
+    pass
 
 
 class BudgetExceeded(Exception):
@@ -116,6 +128,9 @@ class Run:
             "prompt": self.config.prompt,
             "quality": self.config.quality,
             "model": self.config.model,
+            "animation": self.config.animation,
+            "animation_frames": self.config.animation_frames,
+            "animation_fps": self.config.animation_fps,
             "messages": without_images(messages),
         }
         try:
@@ -241,6 +256,9 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
         elif isinstance(cause, BudgetExceeded):
             run.status = "budget_exhausted"
             run.emit("budget_exhausted", message=str(cause))
+        elif isinstance(cause, AnimationIncomplete):
+            run.status = "incomplete"
+            run.emit("incomplete", message=str(cause))
         elif isinstance(cause, TimeoutError):
             run.status = "failed"
             run.emit(
@@ -311,6 +329,41 @@ async def _loop(run, session, tools, provider, state=None):
             ),
         }
     )
+    reference = references.message(run.directory)
+    if reference:
+        if not run.config.vision:
+            raise ValueError("Reference photos require vision")
+        messages.append(reference)
+    # Only an explicit request makes animation a requirement. In "auto" mode a
+    # brief that merely mentions motion words - "motion blur", "a walking path",
+    # "rotating-door mechanism" - gets a hint, never a gate: four such still
+    # briefs were being marked failed with the scene built and unsaved.
+    animated = run.config.animation == "on" or bool(state and state.get("animation") == "on")
+    hinted = not animated and run.config.animation == "auto" and run.config.wants_animation()
+    if hinted:
+        messages.append(
+            {
+                "role": "user",
+                "content": "The brief may describe motion. If it asks for animation, deliver it: distinct "
+                "parts, a root controller, keyframes in radians via astra_keyframe_object, and inspect "
+                "start/middle/end with astra_inspect_animation. If it describes a still scene (motion "
+                "blur, a path as geometry, a mechanism at rest), build the still scene and say so.",
+            }
+        )
+    if animated:
+        run.config.animation = "on"
+        messages.append(
+            {
+                "role": "user",
+                "content": f"ANIMATION DELIVERABLE: {run.config.animation_frames} frames at {run.config.animation_fps} fps. "
+                "Plan a parts/parent/pivot table before building. Keep body, glass, trim, wheels and joints distinct. "
+                "Assemble and check ground/contact before keyframes. Use a common Empty root for shared motion; "
+                "only articulate parts that need relative motion. Inspect start/middle/end and key motion extremes. "
+                "For vision, also view screenshots at representative frames using bpy scene.frame_set. "
+                "Save editable animation in the .blend; do not start a full animation render unless explicitly requested. "
+                "Do not claim smooth or collision-free motion from three numerical samples alone.",
+            }
+        )
     run.messages = messages
     image_count = 0
 
@@ -341,8 +394,8 @@ async def _loop(run, session, tools, provider, state=None):
             return "TOOL ERROR: user denied this action; do not repeat it", []
         run.emit("tool_call", tool=name, arguments=args, internal=internal)
         # Do not automatically retry a mutation: its result may be uncertain after timeout.
-        if name in {"astra_inspect_scene", "astra_frame_camera"}:
-            code = spatial.probe_code() if name == "astra_inspect_scene" else spatial.frame_code(args)
+        if name in {"astra_inspect_scene", "astra_frame_camera", *spatial.MOTION_FUNCTIONS}:
+            code = spatial.tool_code(name, args)
             backend_args = {"code": code}
             if "user_prompt" in tools["execute_blender_code"].inputSchema.get("properties", {}):
                 backend_args["user_prompt"] = run.config.prompt
@@ -356,6 +409,13 @@ async def _loop(run, session, tools, provider, state=None):
                     "quality",
                     issues=report["issues"],
                     message=str(len(report["issues"])) + " scene checks need review",
+                )
+            if name == "astra_inspect_animation" and not text.startswith("TOOL ERROR:"):
+                report = motion.report(spatial.parse_probe(result), spatial.diagnostics)
+                text = json.dumps(report, ensure_ascii=False)
+                (run.directory / "animation.json").write_text(run.clean(text), encoding="utf-8")
+                run.emit(
+                    "animation", message="Evaluated animation poses inspected", actions=report["actions"]
                 )
         else:
             result = await session.call_tool(name, args)
@@ -472,7 +532,9 @@ async def _loop(run, session, tools, provider, state=None):
                     }
                 )
             run.steps += 1
-            message, usage = await provider.complete(messages, offered)
+            message, usage = await provider.complete(
+                [{k: v for k, v in m.items() if k != "astra_reference"} for m in messages], offered
+            )
             run.total_tokens += usage.get("total_tokens", 0) or 0
             run.emit("usage", steps=run.steps, total_tokens=run.total_tokens)
             calls = []
@@ -542,6 +604,8 @@ async def _loop(run, session, tools, provider, state=None):
             # Retain only the latest image-bearing message; keep all text/tool pairs intact.
             seen_image = False
             for old in reversed(messages):
+                if old.get("astra_reference"):
+                    continue
                 if isinstance(old.get("content"), list) and any(
                     b.get("type") == "image_url" for b in old["content"]
                 ):
@@ -554,8 +618,25 @@ async def _loop(run, session, tools, provider, state=None):
                 "Continue with a larger total or per-phase budget. Automatic build budgeting reserves turns for finishing."
             )
         if stage in {"build", "refine"}:
+            if animated or hinted:
+                text, _ = await call("astra_inspect_animation", {}, internal=True)
+                messages.append({"role": "user", "content": "Motion evidence:\n" + text})
             await evidence()
             await save(f"{stage}.blend")
+    motion_found = True
+    if animated:
+        animation_text, _ = await call("astra_inspect_animation", {}, internal=True)
+        motion_found = any(
+            action.get("changing_channels") for action in json.loads(animation_text).get("actions", [])
+        )
     audit, _ = await call("astra_inspect_scene", {}, internal=True)
     messages.append({"role": "user", "content": "Final scene audit:\n" + audit})
+    # The scene is saved before any verdict on it: an incomplete deliverable
+    # is still the person's work, and the run stays continuable.
     await save("scene.blend")
+    if not motion_found:
+        raise AnimationIncomplete(
+            "Animation was requested but no action with changing keyframe values exists. The still "
+            "scene was saved as scene.blend. Continue this run to add the motion; NLA-only or "
+            "procedural rigs need explicit inspection."
+        )

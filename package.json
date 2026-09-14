@@ -1,11 +1,11 @@
 {
   "name": "astra-blender-studio-ui",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "esbuild frontend/viewer.js --bundle --minify --format=esm --outfile=src/astra_blender/static/viewer.bundle.js",
-    "test:ui": "node tests/studio.browser.cjs"
+    "test:ui": "node tests/studio.browser.cjs && node tests/motion.browser.cjs"
   },
   "dependencies": {
     "three": "0.180.0"

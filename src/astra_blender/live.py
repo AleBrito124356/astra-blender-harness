@@ -7,7 +7,7 @@ import time
 from contextlib import asynccontextmanager
 
 from .bridge import connect
-from .spatial import diagnostics, parse_probe, probe_code
+from .spatial import bake_code, diagnostics, known_hashes, merge_unchanged, parse_probe, probe_code
 
 
 class BlenderHub:
@@ -87,14 +87,17 @@ class LiveScene:
 
     async def _refresh(self):
         try:
+            previous = self.snapshot
             result = await self.hub.call_tool(
                 "execute_blender_code",
                 {
-                    "code": probe_code(geometry=True),
+                    # Tell Blender which meshes we already hold so it serializes
+                    # only what changed; the main thread is the scarce resource.
+                    "code": probe_code(geometry=True, known=known_hashes(previous)),
                     "user_prompt": "Read the scene for the human live 3D viewer",
                 },
             )
-            snapshot = parse_probe(result)
+            snapshot = merge_unchanged(parse_probe(result), previous)
             revision = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()[:16]
             self.snapshot, self.revision = snapshot, revision
             self.captured_at = time.time()
@@ -124,6 +127,24 @@ class LiveScene:
             if self.snapshot and self.revision != revision
             else None,
         }
+
+    async def bake(self, step=1):
+        """One read for the whole animation, so playback never asks Blender again."""
+        result = await self.hub.call_tool(
+            "execute_blender_code",
+            {
+                "code": bake_code({"step": step}),
+                "user_prompt": "Bake evaluated motion for the local timeline preview in Astra.",
+            },
+        )
+        return parse_probe(result)
+
+    async def fresh(self):
+        if self.refresh_task and not self.refresh_task.done():
+            await self.refresh_task
+        self.refresh_task = asyncio.create_task(self._refresh())
+        await self.refresh_task
+        return await self.read()
 
     async def close(self):
         if self.refresh_task:

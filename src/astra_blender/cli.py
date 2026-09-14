@@ -2,11 +2,32 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
+import sys
 from pathlib import Path
 
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig
 from .engine import Run, execute, result_parts
+
+
+def fallback_transport(config):
+    """Use the interpreter's own blender-mcp when uvx is not installed.
+
+    The default transport spawns `uvx blender-mcp==1.9.1`. On a machine without
+    uv that fails at spawn time, and the studio can only report it as "Cannot
+    reach Blender" - even though blender-mcp is already installed as a
+    dependency right next to this interpreter. Explicit commands are respected.
+    """
+    if config.transport != "stdio" or config.command != "uvx" or shutil.which("uvx"):
+        return config
+    scripts = Path(sys.executable).parent
+    for name in ("blender-mcp.exe", "blender-mcp"):
+        candidate = scripts / name
+        if candidate.is_file():
+            print(f"uvx is not installed; using {candidate} instead")
+            return config.model_copy(update={"command": str(candidate), "args": []})
+    return config
 
 
 def main():
@@ -24,11 +45,21 @@ def main():
     run.add_argument("--auto-approve", action="store_true")
     run.add_argument("--quality", choices=["draft", "studio", "final"], default="studio")
     run.add_argument("--max-steps", type=int, default=24)
+    run.add_argument(
+        "--reference",
+        type=Path,
+        action="append",
+        default=[],
+        help="Reference photo (repeat up to 3; requires vision)",
+    )
+    run.add_argument("--animation", choices=["auto", "on", "off"], default="auto")
+    run.add_argument("--frames", type=int, default=120)
+    run.add_argument("--fps", type=int, default=24)
     for command in (serve, doctor, run):
         command.add_argument("--config", type=Path)
         command.add_argument("--output", type=Path, default=Path("runs"))
     args = parser.parse_args()
-    config = (
+    config = fallback_transport(
         MCPConfig.model_validate_json(args.config.read_text(encoding="utf-8")) if args.config else MCPConfig()
     )
     if args.command == "serve":
@@ -51,8 +82,11 @@ def main():
             auto_approve=args.auto_approve,
             quality=args.quality,
             max_steps=args.max_steps,
+            animation=args.animation,
+            animation_frames=args.frames,
+            animation_fps=args.fps,
         )
-        result = asyncio.run(_run(settings, config, args.output))
+        result = asyncio.run(_run(settings, config, args.output, args.reference))
         raise SystemExit(0 if result == "completed" else 1)
 
 
@@ -71,8 +105,13 @@ async def _doctor(config):
             print("Blender connected. Tools: " + ", ".join(found))
 
 
-async def _run(settings, config, output):
+async def _run(settings, config, output, reference_paths=()):
+    from . import references
+
+    if len(reference_paths) > 3:
+        raise ValueError("Use at most three reference images")
     run = Run(settings, output)
+    references.attach(run, reference_paths)
     original_emit = run.emit
 
     def emit(kind, **data):

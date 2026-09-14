@@ -32,3 +32,12 @@ This creates test tori, adjusts the camera and saves scene copies. It does not r
 No paid OpenAI, Anthropic, Google or OpenRouter request was made. Provider routing is tested with mocked SDK responses; real account/model permissions and provider-specific behavior still need testing with the user's own key. No aesthetic model benchmark or cross-platform Blender test is claimed. The demo image is an illustration. The live smoke test proves integration and artifact creation, not artistic quality.
 
 On 2026-09-11, final checks passed: 71 Python tests (two opt-in live tests skipped in the ordinary suite), frontend browser checks including the old-backend regression, Ruff and package build. The two opt-in Blender 5.2 tests had passed separately. The updated local server returned all 28 objects from the user scene, and the browser object list matched that snapshot exactly. No paid model calls were made.
+
+## 0.3.0 motion preview and incremental sync (2026-09-11)
+
+Exercised against a live Blender 5.2.1 LTS session with 54 objects (a house, a car assembly and a ground plane) through the packaged `blender-mcp` 1.9.1 with upstream safe mode on:
+
+- Full scene probe with geometry: 269 ms, 349 KB. Incremental probe with every hash known: 75-91 ms, 68 KB, all 54 meshes reported unchanged and merged from the previous snapshot. Through the studio, a frame seek with a fresh probe went from 229-257 ms to 142-163 ms.
+- Motion bake of the whole frame range: 66 ms. `astra_inspect_animation` with the sixteen-frame bounding-box sweep: 146 ms.
+- Safe mode rejects `hashlib`; digests use the `hash()` builtin. Browser tests were run with an installed Edge (`ASTRA_BROWSER_CHANNEL=msedge`) because the Playwright Chromium on the machine did not match the package version.
+- The four still-scene briefs that were auto-classified as animation ("motion blur", "walking path", "luz anima la escena", "rotating-door mechanism") now complete as still scenes; a Motion: Animate run without keyframes ends as `incomplete` with `scene.blend` saved.

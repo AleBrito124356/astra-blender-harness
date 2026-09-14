@@ -1,6 +1,7 @@
 """Trusted read-only bpy probe. Executed inside Blender, never imported by the server."""
 
 import math
+from array import array
 
 import bpy
 from mathutils import Vector
@@ -42,16 +43,95 @@ def _material(mat):
     return data
 
 
-def astra_scene_probe(geometry=False):
+def astra_action_curves(obj):
+    """F-curves of the object's action, including Blender 4.4+ layered actions."""
+    data = obj.animation_data
+    if not data or not data.action:
+        return []
+    action = data.action
+    if hasattr(action, "layers") and action.layers:
+        curves, slot = [], data.action_slot
+        if slot:
+            for layer in action.layers:
+                for strip in layer.strips:
+                    if strip.type == "KEYFRAME":
+                        bag = strip.channelbag(slot)
+                        if bag:
+                            curves.extend(list(bag.fcurves))
+        return curves
+    return list(action.fcurves) if hasattr(action, "fcurves") else []
+
+
+def astra_digest(value):
+    """A 16-hex-digit digest of a hashable value, without hashlib.
+
+    Upstream safe mode allows only bpy, bmesh, mathutils and pure-Python stdlib
+    imports; hashlib is not among them, the hash() builtin is. It is stable
+    within one Blender process, which is exactly the lifetime a change
+    detector needs: a Blender restart simply re-sends everything once.
+    """
+    return format(hash(value) & 0xFFFFFFFFFFFFFFFF, "016x")
+
+
+def astra_animation_fingerprint(animated):
+    if not animated:
+        return ""
+    parts = []
+    for obj in animated:
+        parts.append(obj.name)
+        for curve in astra_action_curves(obj):
+            parts.append(
+                (
+                    curve.data_path,
+                    curve.array_index,
+                    tuple(
+                        (round(p.co.x, 3), round(p.co.y, 5), p.interpolation) for p in curve.keyframe_points
+                    ),
+                )
+            )
+    return astra_digest(tuple(parts))
+
+
+def astra_geometry_hash(obj, materials):
+    """Cheap signature of an evaluated mesh and its materials, or None when the
+    type has no fast path and must be serialized every time."""
+    data = obj.data
+    if obj.type != "MESH" or data is None or not hasattr(data, "vertices"):
+        return None
+    count = len(data.vertices)
+    coords = array("f", [0.0]) * (count * 3)
+    if count:
+        data.vertices.foreach_get("co", coords)
+    return astra_digest(
+        (
+            count,
+            len(data.polygons),
+            hash(coords.tobytes()),
+            tuple(
+                (m["name"], tuple(m["color"]), m["roughness"], m["metallic"], m["opacity"]) for m in materials
+            ),
+        )
+    )
+
+
+def astra_scene_probe(geometry=False, known=None):
+    # known maps instance key to the geometry hash the caller already holds;
+    # matching meshes are reported without positions, normals or triangles.
+    known = known or {}
     scene = bpy.context.scene
     depsgraph = bpy.context.evaluated_depsgraph_get()
     camera = scene.camera
     objects, meshes, warnings = [], [], []
     vertex_budget, triangle_budget = 45000, 60000
+    occurrences = {}
     for index, instance in enumerate(depsgraph.object_instances):
         obj = instance.object
         if obj.hide_render or obj.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META"}:
             continue
+        # Same key the motion bake uses, so baked tracks find their meshes:
+        # the object name, then name#2, name#3 for further instances.
+        occurrences[obj.name] = occurrences.get(obj.name, 0) + 1
+        key = obj.name if occurrences[obj.name] == 1 else f"{obj.name}#{occurrences[obj.name]}"
         if len(objects) >= 250:
             warnings.append("Scene preview limited to 250 visible objects/instances.")
             break
@@ -63,8 +143,13 @@ def astra_scene_probe(geometry=False):
         dimensions = [high[i] - low[i] for i in range(3)]
         record = {
             "id": str(index) + ":" + obj.name,
+            "key": key,
             "name": obj.name,
             "type": obj.type,
+            "parent": obj.original.parent.name if obj.original.parent else None,
+            "anchor": obj.original.get("astra_anchor", ""),
+            "max_gap": obj.original.get("astra_max_gap", 0.15),
+            "origin": _numbers(matrix.translation),
             "bounds": [_numbers(low), _numbers(high)],
             "center": _numbers(center),
             "dimensions": _numbers(dimensions),
@@ -96,6 +181,11 @@ def astra_scene_probe(geometry=False):
             "matrix": _numbers([matrix[r][c] for c in range(4) for r in range(4)]),
             "materials": [_material(slot.material) for slot in obj.material_slots] or [_material(None)],
         }
+        entry["hash"] = astra_geometry_hash(obj, entry["materials"])
+        if entry["hash"] and known.get(key) == entry["hash"]:
+            entry["unchanged"] = True
+            meshes.append(entry)
+            continue
         mesh = None
         try:
             mesh = obj.to_mesh()
@@ -146,6 +236,7 @@ def astra_scene_probe(geometry=False):
             "clip": [camera.data.clip_start, camera.data.clip_end],
             "view_frame": [_numbers(v) for v in camera.data.view_frame(scene=scene)],
         }
+    animated = [o for o in scene.objects if o.animation_data and o.animation_data.action]
     sockets = []
     for mat in bpy.data.materials:
         if mat.use_nodes:
@@ -158,6 +249,14 @@ def astra_scene_probe(geometry=False):
         "scene": scene.name,
         "source_file": bpy.path.basename(bpy.data.filepath) if bpy.data.filepath else "Unsaved scene",
         "frame": scene.frame_current,
+        "timeline": {
+            "start": scene.frame_start,
+            "end": scene.frame_end,
+            "fps": scene.render.fps / scene.render.fps_base,
+            "animated_objects": [o.name for o in animated],
+            # Changes whenever keyframes change, so a baked preview knows it is stale.
+            "fingerprint": astra_animation_fingerprint(animated),
+        },
         "blender_version": bpy.app.version_string,
         "objects": objects,
         "meshes": meshes,

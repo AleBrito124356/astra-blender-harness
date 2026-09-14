@@ -4,7 +4,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 
-def astra_frame_camera(names, margin=0.12):
+def astra_frame_camera(names, margin=0.12, frames=None):
     scene = bpy.context.scene
     if not names:
         raise ValueError(
@@ -16,13 +16,22 @@ def astra_frame_camera(names, margin=0.12):
     objects = [scene.objects[name] for name in names]
     if any(obj.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META"} for obj in objects):
         raise ValueError("Select geometry objects only.")
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    corners = [
-        instance.matrix_world @ Vector(corner)
-        for instance in depsgraph.object_instances
-        if instance.object.original.name in names
-        for corner in instance.object.bound_box
-    ]
+    original_frame = scene.frame_current
+    corners = []
+    try:
+        for frame in frames or [original_frame]:
+            scene.frame_set(frame)
+            depsgraph = bpy.context.evaluated_depsgraph_get()
+            corners.extend(
+                [
+                    instance.matrix_world @ Vector(corner)
+                    for instance in depsgraph.object_instances
+                    if instance.object.original.name in names
+                    for corner in instance.object.bound_box
+                ]
+            )
+    finally:
+        scene.frame_set(original_frame)
     if not corners:
         raise ValueError("Selected subjects are not visible in the current view layer.")
     center = Vector([(min(p[i] for p in corners) + max(p[i] for p in corners)) / 2 for i in range(3)])
@@ -36,8 +45,11 @@ def astra_frame_camera(names, margin=0.12):
         scene.camera = camera
     if camera.data.type not in {"PERSP", "ORTHO"}:
         raise ValueError("Camera fitting supports perspective and orthographic cameras.")
+    if camera.animation_data:
+        raise ValueError("Camera has animation data; adjust its keys or use an unanimated camera explicitly.")
     if camera.constraints:
         raise ValueError("Camera has constraints; fit an unconstrained camera or adjust the rig explicitly.")
+    bpy.context.view_layer.update()
     direction = camera.matrix_world.translation - center
     if direction.length < 0.001:
         direction = Vector((1.3, -2, 1.2))

@@ -437,3 +437,104 @@ async def test_empty_native_output_cannot_complete_a_phase(tmp_path):
     run, _ = await run_with(tmp_path, provider=provider, vision=False)
     assert run.status == "budget_exhausted"
     assert any(e["type"] == "repair" for e in run.events)
+
+
+async def test_reference_images_survive_viewport_history_pruning(tmp_path):
+    from PIL import Image
+
+    from astra_blender.references import attach
+
+    source = tmp_path / "ref.png"
+    Image.new("RGB", (64, 64), "red").save(source)
+    provider = Provider([{"role": "assistant", "content": "Plan"}, action(), action()])
+    session = Session()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    run = Run(RunConfig(prompt="Model the reference photo", auto_approve=True), tmp_path)
+    attach(run, [source])
+    await execute(run, MCPConfig(), provider, connector)
+    assert run.status == "completed"
+    for messages in provider.messages:
+        target = next(
+            m
+            for m in messages
+            if isinstance(m.get("content"), list)
+            and any(
+                b.get("type") == "text" and b.get("text", "").startswith("REFERENCE PHOTOS")
+                for b in m["content"]
+            )
+        )
+        assert any(b.get("type") == "image_url" for b in target["content"])
+        assert all("astra_reference" not in m for m in messages)
+    assert "data:image" not in (run.directory / "state.json").read_text()
+
+
+class MotionSession(Session):
+    """Answers the trusted animation report with a scene that has no keyframes."""
+
+    async def call_tool(self, name, args):
+        if name == "execute_blender_code" and "astra_animation_report(" in args.get("code", ""):
+            self.calls.append((name, args))
+            report = {
+                "schema_version": 1,
+                "start": 1,
+                "end": 24,
+                "fps": 24,
+                "actions": [],
+                "samples": [],
+                "restored_frame": 1,
+            }
+            return CallToolResult(
+                content=[TextContent(type="text", text="ASTRA_SCENE_JSON:" + json.dumps(report))]
+            )
+        return await super().call_tool(name, args)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Product shot of a watch with subtle motion blur on the second hand",
+        "A quiet reading nook; a walking path leads to an arched window",
+        "Sculpture of a rotating-door mechanism, still render",
+    ],
+)
+async def test_motion_words_in_a_still_brief_hint_but_never_gate(tmp_path, prompt):
+    # These briefs were auto-classified as animation and then marked failed at
+    # the end - scene built, scene.blend never written - for lacking keyframes.
+    session = MotionSession()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    provider = Provider()
+    run = Run(RunConfig(prompt=prompt, auto_approve=True), tmp_path)
+    await execute(run, MCPConfig(), provider, connector)
+    assert run.status == "completed"
+    assert (run.directory / "scene.blend").exists()
+    assert run.config.animation == "auto"
+    hint = [m for m in provider.messages[0] if "may describe motion" in str(m.get("content", ""))]
+    assert hint, "the model should be told the brief may describe motion"
+    assert not any("ANIMATION DELIVERABLE" in str(m.get("content", "")) for m in provider.messages[0])
+
+
+async def test_requested_animation_without_keyframes_is_incomplete_not_failed(tmp_path):
+    session = MotionSession()
+
+    @asynccontextmanager
+    async def connector(_):
+        yield session
+
+    run = Run(RunConfig(prompt="Animate the car doors opening", animation="on", auto_approve=True), tmp_path)
+    await execute(run, MCPConfig(), Provider(), connector)
+    assert run.status == "incomplete"
+    assert run.status in TERMINAL
+    # The still scene is the person's work and is saved before the verdict.
+    assert (run.directory / "scene.blend").exists()
+    assert (run.directory / "state.json").exists()
+    assert json.loads((run.directory / "manifest.json").read_text())["status"] == "incomplete"
+    assert run.events[-1]["type"] == "incomplete"
+    assert "Continue this run" in run.events[-1]["message"]

@@ -1,4 +1,5 @@
-from typing import Literal
+import re
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
@@ -51,6 +52,30 @@ class RunConfig(BaseModel):
     vision: bool = True
     auto_approve: bool = False
     quality: Literal["draft", "studio", "final"] = "studio"
+    reference_ids: list[Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]] = Field(
+        default_factory=list, max_length=3
+    )
+    animation: Literal["auto", "on", "off"] = "auto"
+    animation_frames: int = Field(default=120, ge=2, le=1440)
+    animation_fps: int = Field(default=24, ge=1, le=60)
+
+    def wants_animation(self):
+        """Whether the brief reads like an animation request.
+
+        A hint, not a verdict: in "auto" mode the model is told the brief may
+        describe motion, and only animation="on" makes keyframes a requirement.
+        """
+        return self.animation == "on" or (
+            self.animation == "auto"
+            and bool(
+                re.search(
+                    r"\b(animat\w*|anima|animar\w*|animaci\w*|keyfram\w*|walk\w*|caminar\w*|rotating|girar|motion)\b",
+                    self.prompt,
+                    re.IGNORECASE,
+                )
+            )
+        )
+
     screenshot_max_size: int = Field(default=1400, ge=256, le=2048)
     # Budgets. Zero means no limit on that axis: the run then stops only when
     # the model finishes, another budget bites, or you press Stop.
