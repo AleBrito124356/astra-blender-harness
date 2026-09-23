@@ -11,11 +11,14 @@ object summaries have the add-on's exact shape. Safe mode is enforced by the
 host before anything is sent here.
 """
 
+import base64
 import contextlib
 import io
 import json
+import os
 import sys
 import traceback
+import uuid
 
 import bpy
 import mathutils
@@ -120,6 +123,62 @@ def screenshot():
     return {"ok": True, "result": {"error": "Blender runs in background mode; there is no viewport to capture"}}
 
 
+def camera_render(max_size):
+    """A quick Workbench render of the scene camera as base64 PNG.
+
+    Background Blender has no viewport to capture, so this is the stand-in
+    headless_connect(screenshots=True) offers vision runs. It restores every
+    render setting it touches and deletes its temporary file.
+    """
+    scene = bpy.context.scene
+    if scene.camera is None:
+        return {"ok": False, "error": "No scene camera to render (headless Blender has no viewport)"}
+    render = scene.render
+    image = render.image_settings
+    saved = [
+        (render, "engine", render.engine),
+        (render, "resolution_x", render.resolution_x),
+        (render, "resolution_y", render.resolution_y),
+        (render, "resolution_percentage", render.resolution_percentage),
+        (render, "filepath", render.filepath),
+        (render, "film_transparent", render.film_transparent),
+        (image, "media_type", image.media_type),
+        (image, "file_format", image.file_format),
+        (image, "color_mode", image.color_mode),
+        (image, "color_depth", image.color_depth),
+    ]
+    width = render.resolution_x * render.resolution_percentage / 100
+    height = render.resolution_y * render.resolution_percentage / 100
+    scale = min(1.0, float(max_size) / max(width, height))
+    path = os.path.join(bpy.app.tempdir, f"astra_camera_{uuid.uuid4().hex}.png")
+    try:
+        render.engine = "BLENDER_WORKBENCH"
+        render.resolution_x = max(16, round(width * scale))
+        render.resolution_y = max(16, round(height * scale))
+        render.resolution_percentage = 100
+        render.film_transparent = False
+        image.media_type = "IMAGE"
+        image.file_format = "PNG"
+        image.color_mode = "RGB"
+        image.color_depth = "8"
+        render.filepath = path
+        bpy.ops.render.render(write_still=True)
+        with open(path, "rb") as stream:
+            data = stream.read()
+        size = [render.resolution_x, render.resolution_y]
+    except Exception as error:  # noqa: BLE001 - reported to the host as a failed screenshot
+        return {"ok": False, "error": f"Camera render failed: {error}"}
+    finally:
+        for owner, name, value in saved:
+            try:
+                setattr(owner, name, value)
+            except (TypeError, ValueError, AttributeError):
+                pass
+        if os.path.exists(path):
+            os.remove(path)
+    return {"ok": True, "result": {"png": base64.b64encode(data).decode("ascii"), "size": size}}
+
+
 def reset():
     bpy.ops.wm.read_factory_settings(use_empty=False)
     return {"ok": True, "result": {"objects": sorted(obj.name for obj in bpy.context.scene.objects)}}
@@ -143,6 +202,8 @@ def main():
             response = object_info(request.get("name", ""))
         elif op == "screenshot":
             response = screenshot()
+        elif op == "camera_render":
+            response = camera_render(request.get("max_size", 800))
         elif op == "reset":
             response = reset()
         elif op == "ping":

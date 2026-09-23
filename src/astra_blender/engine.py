@@ -114,6 +114,35 @@ class AnimationIncomplete(RuntimeError):
     pass
 
 
+class RequiredToolFailed(RuntimeError):
+    """A call the harness itself needs - evidence, a scene save - failed.
+
+    Its text is Blender's answer, not a provider body, so the run's failure
+    message can quote it instead of sending the reader to check credentials.
+    """
+
+    def __init__(self, name, text):
+        self.name = name
+        self.text = str(text)
+        super().__init__(f"Required {name} operation failed")
+
+
+def required_failure(cause):
+    """The failure message for a RequiredToolFailed: what failed and what Blender said."""
+    detail = " ".join(cause.text.split())[:400]
+    hint = ""
+    if cause.name == "get_viewport_screenshot":
+        hint = (
+            " This Blender has no viewport to capture (headless or background mode): "
+            "turn vision off for this connection."
+        )
+    return f"Astra's own {cause.name} call failed, so the run stopped. Blender answered: {detail}{hint}"
+
+
+# Payload keys every event already has; a payload may not overwrite them.
+RESERVED_EVENT_KEYS = frozenset({"index", "time", "type"})
+
+
 class BudgetExceeded(Exception):
     pass
 
@@ -141,6 +170,10 @@ class Run:
         # Shared by every registry tool of this run (PostContext.state); the
         # latest PostResult snapshots live under "snapshots".
         self.tool_state = {}
+        # Model calls to non-read-only tools that actually ran in Blender (not
+        # refused, denied, invalid or rejected by safe mode). A turn that
+        # raised it is followed by after-edit evidence.
+        self.mutations = 0
 
     def clean(self, value):
         if isinstance(value, str):
@@ -157,7 +190,13 @@ class Run:
             return [self.clean(v) for v in value]
         return value
 
-    def emit(self, kind, **data):
+    def emit(self, kind, /, **data):
+        """Record one event. `kind` is positional-only, so a payload may carry
+        its own `kind` field (render, evidence); the keys every event already
+        has (index, time, type) cannot be overwritten by a payload."""
+        clash = sorted(RESERVED_EVENT_KEYS & data.keys())
+        if clash:
+            raise ValueError(f"Event {kind!r} payload uses reserved keys {clash}")
         event = self.clean({"index": len(self.events), "time": time.time(), "type": kind, **data})
         self.events.append(event)
         with (self.directory / "events.jsonl").open("a", encoding="utf-8") as stream:
@@ -322,6 +361,9 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
         elif isinstance(cause, AnimationIncomplete):
             run.status = "incomplete"
             run.emit("incomplete", message=str(cause))
+        elif isinstance(cause, RequiredToolFailed):
+            run.status = "failed"
+            run.emit("failed", message=required_failure(cause))
         elif isinstance(cause, TimeoutError):
             run.status = "failed"
             run.emit(
@@ -431,7 +473,7 @@ async def _loop(run, session, tools, provider, state=None):
     def refused(name, text):
         return registry.ToolOutcome(name=name, text=text, is_error=True, executed=False)
 
-    def context(spec):
+    def context(spec, args):
         return registry.PostContext(
             tier=DEFAULT_TIER,
             run_dir=run.directory,
@@ -441,6 +483,7 @@ async def _loop(run, session, tools, provider, state=None):
             call=harness_call,
             config=run.config,
             tool=spec.name,
+            args=dict(args),
         )
 
     async def harness_call(name, args=None):
@@ -496,7 +539,7 @@ async def _loop(run, session, tools, provider, state=None):
 
     async def run_spec(spec, args):
         """Dispatch one validated, approved call of a registry tool."""
-        ctx = context(spec)
+        ctx = context(spec, args)
         if spec.kind == "harness":
             try:
                 result = await registry.maybe_await(spec.handler(args, ctx))
@@ -531,7 +574,28 @@ async def _loop(run, session, tools, provider, state=None):
             chunks.append(data)
             if not spec.chunk_key or data.get(spec.chunk_key) is None:
                 break
+            if len(chunks) > 1 and data[spec.chunk_key] == start_from:
+                # The same resume point twice would loop until MAX_CHUNKS.
+                return registry.ToolOutcome(
+                    name=spec.name,
+                    text=f"TOOL ERROR: {spec.name} stopped: it returned {spec.chunk_key}="
+                    f"{data[spec.chunk_key]!r} twice, so it was not advancing. "
+                    f"{len(chunks)} chunks ran; their output is in Blender and the run folder.",
+                    is_error=True,
+                    executed=True,
+                    data={**data, "chunks": chunks},
+                )
             start_from = data[spec.chunk_key]
+        else:
+            return registry.ToolOutcome(
+                name=spec.name,
+                text=f"TOOL ERROR: {spec.name} was not finished after {MAX_CHUNKS} chunks "
+                f"(next {spec.chunk_key}={start_from!r}). The work so far is in Blender and the run "
+                "folder; call it again with a smaller range.",
+                is_error=True,
+                executed=True,
+                data={**chunks[-1], "chunks": chunks},
+            )
         data = {**chunks[-1], "chunks": chunks} if len(chunks) > 1 else chunks[-1]
         if spec.post is None:
             return registry.ToolOutcome(name=spec.name, text=text, is_error=False, executed=True, data=data)
@@ -559,19 +623,23 @@ async def _loop(run, session, tools, provider, state=None):
         # inspecting at full size; an explicit model choice still wins.
         if isinstance(args, dict) and "max_size" in properties and "max_size" not in args:
             args = {**args, "max_size": run.config.screenshot_max_size}
+        spec = registry.find(name)
         try:
             validate(args, tools[name].inputSchema)
             # jsonschema lets NaN and Infinity through; refuse them before approval.
             scripts.check_finite(args)
+            # Rules a schema cannot say (ToolSpec.validate), also before approval.
+            problems = spec.argument_problems(args) if spec is not None else []
         except ValidationError as error:
             return refused(name, "TOOL ERROR: invalid arguments: " + error.message[:500])
         except ToolFailure as failure:
             return refused(name, failure.text)
+        if problems:
+            return refused(name, "TOOL ERROR: invalid arguments: " + "; ".join(problems)[:500])
         if not await run.approve(name, args):
             run.emit("denied", tool=name)
             return refused(name, "TOOL ERROR: user denied this action; do not repeat it")
         run.emit("tool_call", tool=name, arguments=args, internal=internal)
-        spec = registry.find(name)
         if spec is not None:
             outcome = await run_spec(spec, args)
         else:
@@ -606,11 +674,19 @@ async def _loop(run, session, tools, provider, state=None):
                 )
         return outcome
 
+    async def required(name, args):
+        """The outcome of an internal call the harness needs; failing it fails the run."""
+        outcome = await invoke(name, args, internal=True)
+        if outcome.is_error:
+            raise RequiredToolFailed(name, outcome.text)
+        return outcome
+
     async def call(name, args, *, internal=False, readonly=False):
         """(text, image parts) of one call; a failed internal call fails the run."""
-        outcome = await invoke(name, args, internal=internal, readonly=readonly)
-        if internal and outcome.is_error:
-            raise RuntimeError(f"Required {name} operation failed")
+        if internal:
+            outcome = await required(name, args)
+        else:
+            outcome = await invoke(name, args, readonly=readonly)
         return outcome.text, outcome.images
 
     async def evidence():
@@ -628,11 +704,13 @@ async def _loop(run, session, tools, provider, state=None):
             run.emit("simulation", message=f"DEMO: would save {filename}; no Blender file created")
             return
         path = (run.directory / filename).as_posix()
-        text, _ = await call("execute_blender_code", {"code": scripts.save_code(path)}, internal=True)
-        if text.startswith("TOOL ERROR"):
-            raise RuntimeError("Required scene save was denied or failed")
+        await call("execute_blender_code", {"code": scripts.save_code(path)}, internal=True)
         if not (run.directory / filename).is_file():
-            raise RuntimeError("Reported scene save is missing from the shared output directory")
+            raise RequiredToolFailed(
+                "scene save",
+                f"Blender reported saving {filename}, but it is missing from the run's output directory; "
+                "Blender and Astra must share that folder.",
+            )
         run.emit("artifact", file=filename, message="Scene copy verified on disk")
 
     await evidence()
@@ -763,7 +841,9 @@ async def _loop(run, session, tools, provider, state=None):
                 # Failed Python may have changed half the scene before raising, so
                 # an error still counts. A call that never ran - denied, invalid,
                 # refused in a read-only phase or by safe mode - changed nothing.
-                mutated |= bool(outcome and outcome.executed and outcome.name not in READ_ONLY)
+                if outcome and outcome.executed and outcome.name not in READ_ONLY:
+                    run.mutations += 1
+                    mutated = True
                 run.save_state(messages, stage)
             if images:
                 messages.append(
@@ -797,10 +877,11 @@ async def _loop(run, session, tools, provider, state=None):
             await save(f"{stage}.blend")
     motion_found = True
     if animated:
-        animation_text, _ = await call("astra_inspect_animation", {}, internal=True)
-        motion_found = any(
-            action.get("changing_channels") for action in json.loads(animation_text).get("actions", [])
-        )
+        # The parsed script data, not the model-facing text: a post hook is
+        # free to reword what the model reads.
+        report = (await required("astra_inspect_animation", {})).data
+        actions = report.get("actions", []) if isinstance(report, dict) else []
+        motion_found = any(action.get("changing_channels") for action in actions)
     audit, _ = await call("astra_inspect_scene", {}, internal=True)
     messages.append({"role": "user", "content": "Final scene audit:\n" + audit})
     # The scene is saved before any verdict on it: an incomplete deliverable

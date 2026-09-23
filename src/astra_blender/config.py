@@ -37,6 +37,11 @@ class MCPConfig(BaseModel):
             "execute_blender_code",
         ]
     )
+    # Seconds one Blender MCP call may take before Astra stops waiting. The
+    # add-on's socket gives up at 180 s, so the default stays below it; a
+    # longer value only helps with a patched add-on. Read by bridge.connect
+    # and headless_connect (which restarts a stuck headless Blender).
+    blender_timeout: int = Field(default=170, ge=10, le=3600)
 
 
 class RunConfig(BaseModel):
@@ -58,6 +63,10 @@ class RunConfig(BaseModel):
     animation: Literal["auto", "on", "off"] = "auto"
     animation_frames: int = Field(default=120, ge=2, le=1440)
     animation_fps: int = Field(default=24, ge=1, le=60)
+    # astra_look_check test renders the model may ask for in one run (WS1's
+    # budget; the harness's own end-of-build and finalize checks are extra).
+    # 0 turns model-requested test renders off.
+    look_checks: int = Field(default=2, ge=0, le=20)
 
     def wants_animation(self):
         """Whether the brief reads like an animation request.

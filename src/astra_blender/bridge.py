@@ -12,17 +12,21 @@ from .config import MCPConfig
 
 @asynccontextmanager
 async def connect(config: MCPConfig):
+    # One Blender call may run up to config.blender_timeout seconds (default
+    # 170, below the add-on's 180 s socket): a render or a heavy scene probe
+    # used to be cut off by a fixed 90 s here while Blender kept working.
+    timeout = timedelta(seconds=config.blender_timeout)
     if config.transport == "stdio":
         # The SDK inherits a minimal environment, not the LLM provider's credentials.
         async with stdio_client(
             StdioServerParameters(command=config.command, args=config.args, env=config.env)
         ) as (read, write):
-            async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=90)) as session:
+            async with ClientSession(read, write, read_timeout_seconds=timeout) as session:
                 await session.initialize()
                 yield session
     else:
         async with streamablehttp_client(config.url, headers=config.headers) as (read, write, _):
-            async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=90)) as session:
+            async with ClientSession(read, write, read_timeout_seconds=timeout) as session:
                 await session.initialize()
                 yield session
 

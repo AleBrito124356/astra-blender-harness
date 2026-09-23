@@ -14,6 +14,7 @@ docs/tool-contract.md explains every field.
 
 from __future__ import annotations
 
+import ast
 import copy
 import importlib
 import inspect
@@ -74,6 +75,9 @@ class PostContext:
     config   the RunConfig
     tool     the name of the tool being run
     raw      the raw result text of a blender tool, once it exists
+    args     the call's validated model arguments (injected ones excluded),
+             so a post hook can honour an option without the script
+             echoing it back
     """
 
     tier: str
@@ -85,6 +89,7 @@ class PostContext:
     config: Any
     tool: str = ""
     raw: str = ""
+    args: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -164,6 +169,12 @@ class ToolSpec:
     vision: bool | None = None
     # Lower sorts first when a menu is cut by `limit`; ties keep module order.
     priority: int = 100
+    # validate(args) -> [message, ...]: rules JSON Schema cannot express
+    # (which params a preset takes, a range that depends on another
+    # argument). The engine runs it after the schema, before approval, and
+    # refuses the call with "TOOL ERROR: invalid arguments: <messages>";
+    # check_args, recipes and the examples go through it too.
+    validate: Callable | None = None
     # Harness-only argument names added after validation (never in schema).
     injected: tuple = ()
     # inject(args, ctx) -> {name: value} for injected names beyond the
@@ -197,6 +208,12 @@ class ToolSpec:
         from mcp.types import Tool
 
         return Tool(name=self.name, description=self.description, inputSchema=self.schema_for(tier))
+
+    def argument_problems(self, args):
+        """Messages from the validate hook ([] without one, or when valid)."""
+        if self.validate is None:
+            return []
+        return [str(problem) for problem in (self.validate(args) or [])]
 
     def approval_summary(self, args):
         if self.summarize is None:
@@ -246,6 +263,17 @@ def structural_problems(spec):
             problems.append("a harness tool needs handler(args, ctx)")
         if spec.scripts or spec.entry:
             problems.append("a harness tool has no Blender scripts")
+    for hook in ("validate", "inject", "post", "summarize", "handler"):
+        if getattr(spec, hook) is not None and not callable(getattr(spec, hook)):
+            problems.append(f"{hook} must be callable")
+    if spec.kind == "blender" and not problems:
+        clashes = shadowed_names(spec)
+        if clashes:
+            problems.append(
+                "these top-level names are defined in more than one of the concatenated scripts, so a later "
+                "file silently replaces an earlier one: "
+                + ", ".join(f"{name} ({' and '.join(files)})" for name, files in sorted(clashes.items()))
+            )
     unknown = [n for n in spec.injected if n not in STANDARD_INJECTED]
     if unknown and spec.inject is None:
         problems.append(f"injected names {unknown} need an inject(args, ctx) hook")
@@ -254,6 +282,32 @@ def structural_problems(spec):
     if spec.readonly and spec.destructive:
         problems.append("a tool cannot be both readonly and destructive")
     return problems
+
+
+def top_level_names(source):
+    """Functions, classes and assigned names a script defines at module level."""
+    names = []
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                names += [item.id for item in ast.walk(target) if isinstance(item, ast.Name)]
+    return names
+
+
+def shadowed_names(spec):
+    """{name: [files]} for names more than one of a spec's script files define.
+
+    scripts.build concatenates common.py, measure.py and the spec's files, so
+    a second definition replaces the first for every helper that calls it.
+    """
+    owners = {}
+    for filename in scripts.script_files(spec):
+        for name in dict.fromkeys(top_level_names(scripts.source(filename))):
+            owners.setdefault(name, []).append(filename)
+    return {name: files for name, files in owners.items() if len(files) > 1}
 
 
 def load(modules=None, *, reload=False):
@@ -434,10 +488,13 @@ def check_args(name, args, tier=None):
             return [f"{name} is neither registered nor in tools/contract.json"]
         schema = entry["args"]
     validator = Draft202012Validator(schema)
-    return [
+    errors = [
         ("/".join(str(p) for p in error.absolute_path) or "(arguments)") + ": " + error.message
         for error in sorted(validator.iter_errors(args), key=str)
     ]
+    if spec is not None and not errors:
+        errors = ["(arguments): " + problem for problem in spec.argument_problems(args)]
+    return errors
 
 
 def _types(schema):
@@ -447,8 +504,47 @@ def _types(schema):
     return {kind} if isinstance(kind, str) else set(kind)
 
 
-def _schema_problems(pinned, real, where):
+# Keywords that bound a value from below or above. A real schema may be as
+# wide as the pinned one or wider, never narrower.
+LOWER_BOUNDS = ("minimum", "exclusiveMinimum", "minLength", "minItems", "minProperties")
+UPPER_BOUNDS = ("maximum", "exclusiveMaximum", "maxLength", "maxItems", "maxProperties")
+EXACT_KEYWORDS = ("pattern", "format", "const", "multipleOf")
+
+
+def _constraint_problems(pinned, real, where):
+    """Bounds and patterns the contract pins that the real schema narrows."""
     problems = []
+    for key in LOWER_BOUNDS:
+        if key in pinned and real.get(key, pinned[key]) > pinned[key]:
+            problems.append(f"{where}: {key} {real[key]!r} is narrower than the pinned {pinned[key]!r}")
+    for key in UPPER_BOUNDS:
+        if key in pinned and real.get(key, pinned[key]) < pinned[key]:
+            problems.append(f"{where}: {key} {real[key]!r} is narrower than the pinned {pinned[key]!r}")
+    for key in EXACT_KEYWORDS:
+        if key in pinned and key in real and real[key] != pinned[key]:
+            problems.append(f"{where}: {key} {real[key]!r} differs from the pinned {pinned[key]!r}")
+    return problems
+
+
+def _schema_narrowing(pinned, real, where):
+    """Constraints the real schema adds where the contract pins none."""
+    notes = [
+        f"{where}: {key}={real[key]!r}"
+        for key in (*LOWER_BOUNDS, *UPPER_BOUNDS, *EXACT_KEYWORDS, "uniqueItems")
+        if key in real and key not in pinned
+    ]
+    if "properties" in pinned:
+        real_properties = real.get("properties", {})
+        for key, sub in pinned["properties"].items():
+            if key in real_properties:
+                notes += _schema_narrowing(sub, real_properties[key], f"{where}.{key}")
+    if isinstance(pinned.get("items"), dict) and isinstance(real.get("items"), dict):
+        notes += _schema_narrowing(pinned["items"], real["items"], f"{where}[]")
+    return notes
+
+
+def _schema_problems(pinned, real, where):
+    problems = _constraint_problems(pinned, real, where)
     pinned_types, real_types = _types(pinned), _types(real)
     if pinned_types and real_types is not None:
         widened = set(real_types)
@@ -479,19 +575,43 @@ def _schema_problems(pinned, real, where):
 def contract_problems(spec, entry=None):
     """How a registered spec breaks its tools/contract.json entry ([] if it keeps it).
 
-    A call valid against the contract must stay valid against the tool:
-    every pinned argument exists with a compatible type, pinned enum values
-    are accepted, and the tool requires nothing the contract does not.
+    What the contract pins must hold: every pinned argument exists with a
+    compatible type, pinned enum values are accepted, a pinned bound or
+    pattern is not narrowed, and the tool requires nothing the contract does
+    not. The flags kind, readonly, destructive, hidden, expensive and
+    chunk_key match when pinned, and every pinned injected name is injected.
+    Constraints the contract leaves open (a maxItems, a pattern) are the
+    tool's own; contract_narrowing lists them.
     """
     if entry is None:
         entry = contract()["tools"].get(spec.name)
         if entry is None:
             return []
     problems = []
-    for flag in ("kind", "readonly", "destructive", "hidden"):
+    for flag in ("kind", "readonly", "destructive", "hidden", "expensive", "chunk_key"):
         if flag in entry and entry[flag] != getattr(spec, flag):
             problems.append(f"{spec.name}: {flag} is {getattr(spec, flag)!r}, contract says {entry[flag]!r}")
+    missing = [name for name in entry.get("injected", ()) if name not in spec.injected]
+    if missing:
+        problems.append(f"{spec.name}: the contract injects {missing}, which the tool does not")
     return problems + _schema_problems(entry["args"], dict(spec.schema), spec.name)
+
+
+def contract_narrowing(spec, entry=None):
+    """Constraints a registered spec adds to arguments its contract entry pins.
+
+    Not a broken promise: the contract pins names, types, enums and required
+    arguments, and leaves bounds, lengths and patterns to the owner. A call
+    planned against the contract alone can still fail these, which is why
+    fixes and recipes are checked with check_args (the real schema, once
+    registered). Returns readable notes such as "astra_render.filename:
+    pattern='^[a-z0-9_-]{1,40}$'".
+    """
+    if entry is None:
+        entry = contract()["tools"].get(spec.name)
+        if entry is None:
+            return []
+    return _schema_narrowing(entry["args"], dict(spec.schema), spec.name)
 
 
 def markdown():

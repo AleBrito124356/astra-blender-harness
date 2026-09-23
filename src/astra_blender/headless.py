@@ -16,18 +16,28 @@ blender-mcp 1.9.1) and returns their exact strings:
     get_scene_info         the add-on's JSON: name, counts, first 10 objects
     get_object_info        the add-on's JSON, or its "Error getting object
                            info: ..." string
-    get_viewport_screenshot  isError, as upstream fails without a viewport
+    get_viewport_screenshot  isError, as upstream fails without a viewport;
+                           with screenshots=True, a small Workbench render
+                           of the scene camera instead (a PNG image block),
+                           so vision runs can be tested offline
 
 Used by the tests (pytest -m blender), the benchmark and anyone who wants to
-run the whole engine offline:
+run the whole engine offline. Background Blender has no viewport, so a run
+either turns vision off or asks for camera renders:
 
     async with headless_connect(MCPConfig()) as session: ...
+    run = Run(RunConfig(prompt=..., vision=False), root)
     await execute(run, MCPConfig(), provider, connector=headless_connect)
+
+    # a vision run: get_viewport_screenshot answers with a camera render
+    connector = functools.partial(headless_connect, screenshots=True)
+    await execute(Run(RunConfig(prompt=...), root), MCPConfig(), provider, connector=connector)
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import queue
@@ -241,19 +251,27 @@ class HeadlessBlender:
             return f"Code executed successfully: {reply['stdout']}"
         return f"Error executing code: Communication error with Blender: Code execution error: {reply['error']}"
 
-    def get_scene_info(self):
-        reply = self.request("scene_info")
+    def get_scene_info(self, timeout=None):
+        reply = self.request("scene_info", timeout=timeout)
         return json.dumps(reply["result"], indent=2)
 
-    def get_object_info(self, name):
-        reply = self.request("object_info", name=name)
+    def get_object_info(self, name, timeout=None):
+        reply = self.request("object_info", timeout=timeout, name=name)
         if not reply["ok"]:
             return f"Error getting object info: Communication error with Blender: {reply['error']}"
         return json.dumps(reply["result"], indent=2)
 
-    def get_viewport_screenshot(self):
-        reply = self.request("screenshot")
+    def get_viewport_screenshot(self, timeout=None):
+        reply = self.request("screenshot", timeout=timeout)
         return "Error executing tool get_viewport_screenshot: Screenshot failed: " + reply["result"]["error"]
+
+    def camera_render(self, max_size=800, timeout=None):
+        """(png bytes, None) of a quick Workbench render of the scene camera,
+        or (None, error text). Every render setting is restored afterwards."""
+        reply = self.request("camera_render", timeout=timeout, max_size=int(max_size))
+        if not reply["ok"]:
+            return None, reply["error"]
+        return base64.b64decode(reply["result"]["png"]), None
 
 
 def upstream_tools():
@@ -264,56 +282,74 @@ def upstream_tools():
 
 
 class HeadlessSession:
-    """The subset of mcp.ClientSession the engine uses, backed by HeadlessBlender."""
+    """The subset of mcp.ClientSession the engine uses, backed by HeadlessBlender.
+
+    call_tool takes ClientSession.call_tool's full signature; a per-call
+    read_timeout_seconds becomes that call's worker timeout (a call that
+    passes it restarts the worker, as a stuck add-on would be abandoned).
+    """
 
     simulated = False
 
-    def __init__(self, blender):
+    def __init__(self, blender, screenshots=False):
         self.blender = blender
+        self.screenshots = screenshots
         self.calls = []
 
     async def list_tools(self, cursor=None):
         return SimpleNamespace(tools=upstream_tools(), nextCursor=None)
 
-    async def call_tool(self, name, arguments=None):
-        from mcp.types import CallToolResult, TextContent
+    async def call_tool(self, name, arguments=None, read_timeout_seconds=None, progress_callback=None, *, meta=None):
+        from mcp.types import CallToolResult, ImageContent, TextContent
 
         arguments = dict(arguments or {})
         self.calls.append((name, arguments))
+        timeout = read_timeout_seconds.total_seconds() if read_timeout_seconds is not None else None
 
         def text(value, error=False):
             return CallToolResult(content=[TextContent(type="text", text=value)], isError=error)
 
+        blender = self.blender
         if name == "execute_blender_code":
-            return text(await asyncio.to_thread(self.blender.execute_blender_code, arguments.get("code", "")))
+            return text(await asyncio.to_thread(blender.execute_blender_code, arguments.get("code", ""), timeout))
         if name == "get_scene_info":
-            return text(await asyncio.to_thread(self.blender.get_scene_info))
+            return text(await asyncio.to_thread(blender.get_scene_info, timeout))
         if name == "get_object_info":
-            return text(await asyncio.to_thread(self.blender.get_object_info, arguments.get("object_name", "")))
+            return text(await asyncio.to_thread(blender.get_object_info, arguments.get("object_name", ""), timeout))
         if name == "get_viewport_screenshot":
-            return text(await asyncio.to_thread(self.blender.get_viewport_screenshot), error=True)
+            if not self.screenshots:
+                return text(await asyncio.to_thread(blender.get_viewport_screenshot, timeout), error=True)
+            png, error = await asyncio.to_thread(blender.camera_render, arguments.get("max_size", 800), timeout)
+            if png is None:
+                return text("Error executing tool get_viewport_screenshot: Screenshot failed: " + error, error=True)
+            data = base64.b64encode(png).decode("ascii")
+            return CallToolResult(content=[ImageContent(type="image", data=data, mimeType="image/png")])
         return text(f"Unknown tool: {name}", error=True)
 
 
 @asynccontextmanager
-async def headless_connect(config=None, *, blender=None, reset=False, timeout=None):
+async def headless_connect(config=None, *, blender=None, reset=False, timeout=None, screenshots=False):
     """An engine connector backed by headless Blender.
 
     Pass `blender` to reuse a running HeadlessBlender (the tests share one
     per session, reset between tests); otherwise one is started for this
-    connection and closed after it. `reset` returns a shared one to the
-    factory scene first.
+    connection, with config.blender_timeout as its per-call timeout, and
+    closed after it. `timeout` overrides the per-call timeout either way.
+    `reset` returns a shared one to the factory scene first. `screenshots`
+    answers get_viewport_screenshot with a camera render (see the module
+    docstring) instead of upstream's failure.
     """
     owned = blender is None
     if owned:
-        blender = HeadlessBlender(timeout=timeout or DEFAULT_TIMEOUT)
+        configured = getattr(config, "blender_timeout", None)
+        blender = HeadlessBlender(timeout=timeout or configured or DEFAULT_TIMEOUT)
     elif timeout is not None:
         blender.timeout = float(timeout)
     await asyncio.to_thread(blender.start)
     try:
         if reset:
             await asyncio.to_thread(blender.reset)
-        yield HeadlessSession(blender)
+        yield HeadlessSession(blender, screenshots=screenshots)
     finally:
         if owned:
             await asyncio.to_thread(blender.close)

@@ -26,9 +26,11 @@ RESULT_LIMIT = 20000
 _ERROR_START = re.compile(r"(?i)^\s*(error\b|failed\b)")
 _SAFE_MODE = re.compile(r"^\s*(?:TOOL ERROR: )?Rejected by safe mode")
 # WS5's guard wraps raw scripts so an exception prints this marker, with the
-# line, instead of failing without partial output. It follows either a line
-# start or upstream's "Code executed successfully: " prefix.
-_SCRIPT_ERROR = re.compile(r"(?:^|\n|: )ASTRA_SCRIPT_ERROR line \d+")
+# line, on a line of its own instead of failing without partial output. It
+# starts a line, or follows upstream's "Code executed successfully: " prefix
+# when it is the first line printed. Anchored so an object named
+# "Label: ASTRA_SCRIPT_ERROR line 2" inside printed JSON is not an error.
+_SCRIPT_ERROR = re.compile(r"(?m)^(?:Code executed successfully: )?ASTRA_SCRIPT_ERROR line \d+")
 
 NOT_FINITE = "TOOL ERROR: numbers must be finite"
 NO_MARKER = (

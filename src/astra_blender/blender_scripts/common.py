@@ -15,6 +15,9 @@ ASTRA_GEOMETRY = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
 # Types whose render geometry the depsgraph also yields as a MESH instance of
 # the object itself; counting the original too would list them twice.
 ASTRA_CONVERTED = {"CURVE", "SURFACE", "FONT", "META"}
+# persistent_id[1] of a depsgraph instance that is not one of many (the render
+# mesh of a curve or text); Geometry Nodes instances carry their index there.
+ASTRA_NO_INDEX = 2147483647
 ASTRA_RESTORE_KEY = "astra_restore"
 
 
@@ -137,32 +140,44 @@ def astra_geometry(depsgraph, include_hidden=False):
       MESH instance the depsgraph makes of their render geometry, and are
       named and typed after the original object.
     - Collection and Geometry Nodes instances are aggregated per instancer:
-      `instances` counts them, `sources` names what they instance, and lo/hi
-      grow to include them. The instancer's own geometry, if any, sets
-      matrix/evaluated.
+      `instances` counts them, `sources` names what they instance (an object,
+      a mesh datablock, or 'geometry' for meshes the node tree made), and
+      lo/hi grow to include them.
+    - matrix and evaluated describe the instancer's own geometry: a copy of
+      its matrix_world and obj.evaluated_get(depsgraph), which stays valid
+      after this call (call to_mesh() on it, curves and text included). An
+      instancer without geometry of its own (a collection Empty) keeps None.
+
+    The iterator's instance.object is a temporary that is reused for the
+    next instance, so it is only read inside the loop, never stored.
     """
     records = {}
     order = []
     for instance in depsgraph.object_instances:
         obj = instance.object
         original = obj.original
-        parent = instance.parent.original if instance.is_instance and instance.parent is not None else None
-        if instance.is_instance and parent is not None and parent.name != original.name:
-            owner = parent
-            own = False
-        elif instance.is_instance:
-            owner = original
-            own = True
-        else:
-            if original.type in ASTRA_CONVERTED or original.type not in ASTRA_GEOMETRY:
-                continue
-            owner = original
-            own = True
         if obj.type not in ASTRA_GEOMETRY:
             continue
+        source = None
+        if instance.is_instance:
+            parent = instance.parent.original if instance.parent is not None else original
+            if parent.name != original.name:
+                # A collection (or dupli) instance of another object.
+                owner, own, source = parent, False, original.name
+            elif original.type in ASTRA_CONVERTED and instance.persistent_id[1] == ASTRA_NO_INDEX:
+                # The render mesh of a curve, text, metaball or surface.
+                owner, own = original, True
+            else:
+                # A Geometry Nodes instance: the depsgraph names it after the
+                # instancer itself, with the instance index in persistent_id.
+                owner, own = original, False
+                source = astra_instance_source(obj)
+        else:
+            if original.type in ASTRA_CONVERTED:
+                continue
+            owner, own = original, True
         if not include_hidden and (owner.hide_render or original.hide_render):
             continue
-        matrix = instance.matrix_world.copy()
         record = records.get(owner.name)
         if record is None:
             record = {
@@ -179,19 +194,45 @@ def astra_geometry(depsgraph, include_hidden=False):
             records[owner.name] = record
             order.append(owner.name)
         if own:
-            record["matrix"] = matrix
-            record["evaluated"] = obj
+            record["matrix"] = owner.matrix_world.copy()
+            record["evaluated"] = owner.evaluated_get(depsgraph)
+            if obj.type == "MESH" and len(obj.data.vertices) == 0:
+                # Geometry Nodes that output only instances leave an empty
+                # mesh; its zero bound box would pull lo/hi to the origin.
+                continue
         else:
             record["kind"] = "instancer"
             record["instances"] += 1
-            if original.name not in record["sources"]:
-                record["sources"].append(original.name)
+            if source not in record["sources"]:
+                record["sources"].append(source)
+        matrix = instance.matrix_world
         for corner in obj.bound_box:
             point = matrix @ Vector(corner)
             for axis in range(3):
                 record["lo"][axis] = min(record["lo"][axis], point[axis])
                 record["hi"][axis] = max(record["hi"][axis], point[axis])
-    return [records[name] for name in order]
+    result = []
+    for name in order:
+        record = records[name]
+        if record["lo"].x > record["hi"].x:
+            # Nothing measurable (an empty mesh): the bounds are its origin.
+            origin = bpy.data.objects[name].matrix_world.translation
+            record["lo"], record["hi"] = origin.copy(), origin.copy()
+        result.append(record)
+    return result
+
+
+def astra_instance_source(obj):
+    """What a Geometry Nodes instance shows: its mesh's name, else 'geometry'.
+
+    Object Info instancing hands over a copy of the source object's mesh,
+    which keeps the datablock's name; meshes the node tree generates (an Ico
+    Sphere node) are named 'Mesh' and exist nowhere in bpy.data.
+    """
+    data = obj.data
+    if obj.type == "MESH" and data is not None and bpy.data.meshes.get(data.name) is not None:
+        return data.name
+    return "geometry"
 
 
 def astra_render_snapshot(scene):

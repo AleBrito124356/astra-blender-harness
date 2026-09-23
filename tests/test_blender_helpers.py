@@ -144,28 +144,106 @@ for index in range(2):
     holder.instance_collection = props
     holder.location = (10.0 + 4.0 * index, 0.0, 0.0)
     scene.collection.objects.link(holder)
+rock_mesh = bpy.data.meshes.new("RockMesh")
+rock_mesh.from_pydata([(-0.25, -0.25, 0), (0.25, -0.25, 0), (0.25, 0.25, 0), (-0.25, 0.25, 0), (0, 0, 0.5)], [],
+                      [(0, 1, 2, 3), (0, 1, 4), (1, 2, 4), (2, 3, 4), (3, 0, 4)])
+rock = bpy.data.objects.new("Rock", rock_mesh)
+rock.location = (0.0, -20.0, 0.0)
+scene.collection.objects.link(rock)
+
+
+def points_tree(name, by_object, keep_original):
+    tree = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    tree.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    tree.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    nodes, links = tree.nodes, tree.links
+    group_in, group_out = nodes.new("NodeGroupInput"), nodes.new("NodeGroupOutput")
+    to_points = nodes.new("GeometryNodeMeshToPoints")
+    on_points = nodes.new("GeometryNodeInstanceOnPoints")
+    links.new(group_in.outputs[0], to_points.inputs["Mesh"])
+    links.new(to_points.outputs["Points"], on_points.inputs["Points"])
+    if by_object:
+        info = nodes.new("GeometryNodeObjectInfo")
+        info.inputs["Object"].default_value = rock
+        links.new(info.outputs["Geometry"], on_points.inputs["Instance"])
+    else:
+        ico = nodes.new("GeometryNodeMeshIcoSphere")
+        ico.inputs["Radius"].default_value = 0.2
+        links.new(ico.outputs["Mesh"], on_points.inputs["Instance"])
+    if keep_original:
+        join = nodes.new("GeometryNodeJoinGeometry")
+        links.new(group_in.outputs[0], join.inputs[0])
+        links.new(on_points.outputs["Instances"], join.inputs[0])
+        links.new(join.outputs[0], group_out.inputs[0])
+    else:
+        links.new(on_points.outputs["Instances"], group_out.inputs[0])
+    return tree
+
+
+# Scatter: Instance on Points of the Rock object, nothing of its own left.
+grid = bpy.data.meshes.new("ScatterGrid")
+grid.from_pydata([(0, 0, 0), (3, 0, 0), (0, 3, 0), (3, 3, 0)], [], [])
+scatter = bpy.data.objects.new("Scatter", grid)
+scatter.location = (0.0, 20.0, 0.0)
+scene.collection.objects.link(scatter)
+scatter.modifiers.new("GN", "NODES").node_group = points_tree("ScatterGN", True, False)
+# Studs: a plate that keeps its face and gets a generated sphere on each corner.
+plate = bpy.data.meshes.new("StudPlate")
+plate.from_pydata([(0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)], [], [(0, 1, 2, 3)])
+studs = bpy.data.objects.new("Studs", plate)
+studs.location = (20.0, 20.0, 0.0)
+scene.collection.objects.link(studs)
+studs.modifiers.new("GN", "NODES").node_group = points_tree("StudsGN", False, True)
 """,
     )
     data = run(
         headless,
         """
 records = astra_geometry(bpy.context.evaluated_depsgraph_get())
-result = {"records": [
-    {"name": r["name"], "type": r["type"], "kind": r["kind"], "instances": r["instances"],
-     "sources": r["sources"], "lo": list(r["lo"]), "hi": list(r["hi"]), "own": r["matrix"] is not None}
-    for r in records]}
+rows = []
+for r in records:
+    evaluated = r["evaluated"]
+    faces = None
+    if evaluated is not None:
+        # The stored reference is still this object's own geometry after the loop.
+        mesh = evaluated.to_mesh()
+        faces = len(mesh.polygons)
+        evaluated.to_mesh_clear()
+    rows.append({"name": r["name"], "type": r["type"], "kind": r["kind"], "instances": r["instances"],
+                 "sources": r["sources"], "lo": list(r["lo"]), "hi": list(r["hi"]), "own": r["matrix"] is not None,
+                 "evaluated": None if evaluated is None else [evaluated.name, evaluated.type, evaluated.data.name],
+                 "faces": faces, "origin": None if r["matrix"] is None else list(r["matrix"].translation)})
+result = {"records": rows}
 """,
     )["records"]
     by_name = {r["name"]: r for r in data}
     names = [r["name"] for r in data]
-    assert sorted(names) == ["Blob", "Cable", "Cube", "Holder0", "Holder1", "Title"]
+    assert sorted(names) == ["Blob", "Cable", "Cube", "Holder0", "Holder1", "Rock", "Scatter", "Studs", "Title"]
     assert len(names) == len(set(names))
     assert (by_name["Title"]["type"], by_name["Cable"]["type"], by_name["Blob"]["type"]) == ("FONT", "CURVE", "META")
     # The cable is measured through its evaluated mesh, not its control points.
     assert by_name["Cable"]["hi"][2] - by_name["Cable"]["lo"][2] == pytest.approx(0.1, abs=0.01)
+    # Each record keeps its own evaluated object, not the iterator's last temporary.
+    assert by_name["Title"]["evaluated"] == ["Title", "FONT", "TitleText"] and by_name["Title"]["faces"] > 100
+    assert by_name["Cable"]["evaluated"] == ["Cable", "CURVE", "CableCurve"] and by_name["Cable"]["faces"] == 12
+    assert by_name["Blob"]["evaluated"][:2] == ["Blob", "META"] and by_name["Blob"]["faces"] > 100
+    assert by_name["Blob"]["origin"] == pytest.approx([-5.0, 0.0, 0.0])
     holder = by_name["Holder1"]
     assert (holder["kind"], holder["instances"], holder["sources"], holder["own"]) == ("instancer", 1, ["Crate"], False)
     assert holder["lo"][0] == pytest.approx(13.0) and holder["hi"][0] == pytest.approx(15.0)
+    # Geometry Nodes instances belong to their instancer, which keeps its own matrix and mesh.
+    scatter = by_name["Scatter"]
+    assert (scatter["kind"], scatter["instances"], scatter["sources"]) == ("instancer", 4, ["RockMesh"])
+    assert scatter["evaluated"] == ["Scatter", "MESH", "ScatterGrid"] and scatter["faces"] == 0
+    assert scatter["origin"] == pytest.approx([0.0, 20.0, 0.0])
+    assert scatter["lo"] == pytest.approx([-0.25, 19.75, 0.0]) and scatter["hi"] == pytest.approx([3.25, 23.25, 0.5])
+    studs = by_name["Studs"]
+    assert (studs["kind"], studs["instances"], studs["sources"]) == ("instancer", 4, ["geometry"])
+    assert studs["evaluated"] == ["Studs", "MESH", "StudPlate"] and studs["faces"] == 1
+    assert studs["origin"] == pytest.approx([20.0, 20.0, 0.0])
+    # The generated spheres (radius 0.2, extent 0.179 along x) grow the plate's bounds.
+    assert studs["lo"][0] == pytest.approx(19.821, abs=1e-3) and studs["hi"][0] == pytest.approx(22.179, abs=1e-3)
+    assert by_name["Rock"]["kind"] == "object" and by_name["Rock"]["instances"] == 0
 
 
 def test_render_snapshot_restores_everything_even_after_a_crash(headless):
