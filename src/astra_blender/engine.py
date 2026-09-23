@@ -8,9 +8,10 @@ from pathlib import Path
 
 from jsonschema import ValidationError, validate
 
-from . import motion, references, spatial
+from . import references, registry, scripts
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig
+from .errors import ToolFailure
 from .history import repair_history
 from .prompts import STAGES, SYSTEM
 from .provider import LiteLLMProvider, parse_json_action
@@ -45,13 +46,13 @@ def without_images(messages):
     return lean
 
 
-READ_ONLY = {
-    "get_scene_info",
-    "get_object_info",
-    "get_viewport_screenshot",
-    "astra_inspect_scene",
-    "astra_inspect_animation",
-}
+# Upstream read-only tools plus every registry tool marked readonly: no
+# approval, allowed in read-only phases, no after-edit evidence.
+READ_ONLY = registry.read_only_names()
+# The profile tier handed to post hooks until WS6 derives it per model.
+DEFAULT_TIER = "large"
+# A chunked tool (ToolSpec.chunk_key) runs at most this many times per model call.
+MAX_CHUNKS = 200
 # "incomplete": the scene was built and saved, but a requested deliverable
 # (so far, animation) is missing. Continuable, and not a failure of anything.
 TERMINAL = {"completed", "failed", "cancelled", "budget_exhausted", "incomplete"}
@@ -137,6 +138,9 @@ class Run:
         # that stopped early without reaching back into the loop.
         self.messages = []
         self.current_stage = None
+        # Shared by every registry tool of this run (PostContext.state); the
+        # latest PostResult snapshots live under "snapshots".
+        self.tool_state = {}
 
     def clean(self, value):
         if isinstance(value, str):
@@ -210,7 +214,11 @@ class Run:
         approval_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self.approvals[approval_id] = future
-        self.emit("approval", approval_id=approval_id, tool=name, arguments=arguments)
+        # A registry tool describes itself in one plain sentence (ToolSpec.summarize).
+        spec = registry.find(name)
+        summary = spec.approval_summary(arguments) if spec is not None else None
+        extra = {"summary": summary} if summary else {}
+        self.emit("approval", approval_id=approval_id, tool=name, arguments=arguments, **extra)
         self.status = "awaiting_approval"
         # Human review time is not the model's time. Suspend the deadline for as
         # long as the operation sits unanswered, then restore it shifted by the
@@ -269,9 +277,12 @@ def result_parts(result):
             images.append(block)
     if getattr(result, "structuredContent", None):
         texts.append(json.dumps(result.structuredContent))
-    failed = result.isError or any(re.match(r"(?i)^\s*(error\b|failed\b)", t) for t in texts)
-    prefix = "TOOL ERROR: " if failed else ""
-    return prefix + "\n".join(texts)[:20000], images
+    # classify also flags a safe-mode rejection, which upstream returns as an
+    # ordinary string, and the script guard's ASTRA_SCRIPT_ERROR marker.
+    failed = bool(result.isError) or any(scripts.classify(t)[1] for t in texts)
+    joined = "\n".join(texts)
+    prefix = "TOOL ERROR: " if failed and not joined.startswith("TOOL ERROR: ") else ""
+    return prefix + joined[: scripts.RESULT_LIMIT], images
 
 
 async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=connect, state=None):
@@ -343,7 +354,10 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
 
 
 async def _loop(run, session, tools, provider, state=None):
-    tools = {**tools, **{tool.name: tool for tool in spatial.tools()}}
+    # Registry tools are always available, whatever allowed_tools says;
+    # hidden ones are accepted when called but never offered.
+    tools = {**tools, **{spec.name: spec.as_tool() for spec in registry.all_specs()}}
+    hidden = registry.hidden_names()
     messages = [
         {"role": "system", "content": SYSTEM},
         {
@@ -414,17 +428,130 @@ async def _loop(run, session, tools, provider, state=None):
     run.messages = messages
     image_count = 0
 
-    async def call(name, args, *, internal=False, readonly=False):
+    def refused(name, text):
+        return registry.ToolOutcome(name=name, text=text, is_error=True, executed=False)
+
+    def context(spec):
+        return registry.PostContext(
+            tier=DEFAULT_TIER,
+            run_dir=run.directory,
+            state=run.tool_state,
+            clean=run.clean,
+            emit=run.emit,
+            call=harness_call,
+            config=run.config,
+            tool=spec.name,
+        )
+
+    async def harness_call(name, args=None):
+        """PostContext.call: a nested, internal call of a read-only registry tool."""
+        spec = registry.find(name)
+        if spec is None or not spec.readonly:
+            raise ToolFailure(f"ctx.call may only run read-only registry tools; {name!r} is not one")
+        return await invoke(name, dict(args or {}), internal=True, readonly=True)
+
+    def finish(spec, result, data):
+        """Apply a PostResult: files, events, snapshot, then the model's text."""
+        if not isinstance(result, registry.PostResult):
+            raise TypeError(f"{spec.name} returned {type(result).__name__}, not a PostResult")
+        for filename, content in result.files.items():
+            if Path(filename).name != filename or filename in {"", ".", ".."}:
+                raise ToolFailure(f"{spec.name} tried to write {filename!r} outside the run directory")
+            path = run.directory / filename
+            if isinstance(content, bytes):
+                path.write_bytes(content)
+            else:
+                path.write_text(run.clean(str(content)), encoding="utf-8")
+        for kind, payload in result.events:
+            run.emit(kind, **payload)
+        if result.snapshot is not None:
+            run.tool_state.setdefault("snapshots", {})[spec.name] = result.snapshot
+        return registry.ToolOutcome(
+            name=spec.name,
+            text=result.text,
+            is_error=result.text.startswith("TOOL ERROR:"),
+            executed=True,
+            data=data,
+            snapshot=result.snapshot,
+        )
+
+    def injected_values(spec, args, ctx):
+        """The harness-only arguments of a spec (ToolSpec.injected)."""
+        if not spec.injected:
+            return {}
+        values = {"output_dir": run.directory.as_posix(), "budget_s": float(spec.max_seconds), "start_from": None}
+        if "known" in spec.injected:
+            values["known"] = dict(run.tool_state.get("known", {}).get(spec.name, {}))
+        if "save_to" in spec.injected:
+            counts = run.tool_state.setdefault("save_counts", {})
+            counts[spec.name] = counts.get(spec.name, 0) + 1
+            stem = spec.name.removeprefix("astra_")
+            values["save_to"] = (run.directory / f"{stem}-{counts[spec.name]:03}.png").as_posix()
+        if spec.inject is not None:
+            values.update(spec.inject(args, ctx) or {})
+        missing = [key for key in spec.injected if key not in values]
+        if missing:
+            raise ToolFailure(f"{spec.name} needs harness values for {missing}")
+        return {key: values[key] for key in spec.injected}
+
+    async def run_spec(spec, args):
+        """Dispatch one validated, approved call of a registry tool."""
+        ctx = context(spec)
+        if spec.kind == "harness":
+            try:
+                result = await registry.maybe_await(spec.handler(args, ctx))
+                return finish(spec, result, None)
+            except ToolFailure as failure:
+                return registry.ToolOutcome(name=spec.name, text=failure.text, is_error=True, executed=True)
+        chunks, start_from, text, values = [], None, "", None
+        for _ in range(MAX_CHUNKS):
+            try:
+                # Resolved once per model call, so a save_to counter moves once.
+                values = injected_values(spec, args, ctx) if values is None else values
+                if spec.chunk_key:
+                    values["start_from"] = start_from
+                code = scripts.build(spec, args, values)
+            except ToolFailure as failure:
+                return registry.ToolOutcome(
+                    name=spec.name, text=failure.text, is_error=True, executed=bool(chunks)
+                )
+            backend_args = {"code": code}
+            if "user_prompt" in tools["execute_blender_code"].inputSchema.get("properties", {}):
+                backend_args["user_prompt"] = run.config.prompt
+            # Never retried automatically: a mutation's outcome is uncertain after a timeout.
+            result = await session.call_tool("execute_blender_code", backend_args)
+            text, _ = result_parts(result)
+            if text.startswith("TOOL ERROR:"):
+                ran = bool(chunks) or not scripts.rejected_by_safe_mode(text.removeprefix("TOOL ERROR: "))
+                return registry.ToolOutcome(name=spec.name, text=text, is_error=True, executed=ran)
+            try:
+                data = scripts.parse(result)
+            except ToolFailure as failure:
+                return registry.ToolOutcome(name=spec.name, text=failure.text, is_error=True, executed=True)
+            chunks.append(data)
+            if not spec.chunk_key or data.get(spec.chunk_key) is None:
+                break
+            start_from = data[spec.chunk_key]
+        data = {**chunks[-1], "chunks": chunks} if len(chunks) > 1 else chunks[-1]
+        if spec.post is None:
+            return registry.ToolOutcome(name=spec.name, text=text, is_error=False, executed=True, data=data)
+        ctx.raw = text
+        try:
+            return finish(spec, await registry.maybe_await(spec.post(data, ctx)), data)
+        except ToolFailure as failure:
+            return registry.ToolOutcome(name=spec.name, text=failure.text, is_error=True, executed=True, data=data)
+
+    async def invoke(name, args, *, internal=False, readonly=False):
+        """Run one tool call end to end and describe what happened (a ToolOutcome)."""
         nonlocal image_count
         if name not in tools:
-            return "TOOL ERROR: tool is unavailable or not allowed", []
+            return refused(name, "TOOL ERROR: tool is unavailable or not allowed")
         if name == "get_viewport_screenshot" and not run.config.vision:
-            return (
-                "TOOL ERROR: vision disabled; use astra_inspect_scene. The human live viewer is independent.",
-                [],
+            return refused(
+                name, "TOOL ERROR: vision disabled; use astra_inspect_scene. The human live viewer is independent."
             )
         if readonly and name not in READ_ONLY:
-            return "TOOL ERROR: this phase is read-only", []
+            return refused(name, "TOOL ERROR: this phase is read-only")
         properties = tools[name].inputSchema.get("properties", {})
         if isinstance(args, dict) and "user_prompt" in properties:
             args = {**args, "user_prompt": run.config.prompt}
@@ -434,45 +561,35 @@ async def _loop(run, session, tools, provider, state=None):
             args = {**args, "max_size": run.config.screenshot_max_size}
         try:
             validate(args, tools[name].inputSchema)
+            # jsonschema lets NaN and Infinity through; refuse them before approval.
+            scripts.check_finite(args)
         except ValidationError as error:
-            return "TOOL ERROR: invalid arguments: " + error.message[:500], []
+            return refused(name, "TOOL ERROR: invalid arguments: " + error.message[:500])
+        except ToolFailure as failure:
+            return refused(name, failure.text)
         if not await run.approve(name, args):
             run.emit("denied", tool=name)
-            return "TOOL ERROR: user denied this action; do not repeat it", []
+            return refused(name, "TOOL ERROR: user denied this action; do not repeat it")
         run.emit("tool_call", tool=name, arguments=args, internal=internal)
-        # Do not automatically retry a mutation: its result may be uncertain after timeout.
-        if name in {"astra_inspect_scene", "astra_frame_camera", *spatial.MOTION_FUNCTIONS}:
-            code = spatial.tool_code(name, args)
-            backend_args = {"code": code}
-            if "user_prompt" in tools["execute_blender_code"].inputSchema.get("properties", {}):
-                backend_args["user_prompt"] = run.config.prompt
-            result = await session.call_tool("execute_blender_code", backend_args)
-            text, images = result_parts(result)
-            if name == "astra_inspect_scene" and not text.startswith("TOOL ERROR:"):
-                report = spatial.diagnostics(spatial.parse_probe(result))
-                text = json.dumps(report, ensure_ascii=False)
-                (run.directory / "quality.json").write_text(run.clean(text), encoding="utf-8")
-                run.emit(
-                    "quality",
-                    issues=report["issues"],
-                    message=str(len(report["issues"])) + " scene checks need review",
-                )
-            if name == "astra_inspect_animation" and not text.startswith("TOOL ERROR:"):
-                report = motion.report(spatial.parse_probe(result), spatial.diagnostics)
-                text = json.dumps(report, ensure_ascii=False)
-                (run.directory / "animation.json").write_text(run.clean(text), encoding="utf-8")
-                run.emit(
-                    "animation", message="Evaluated animation poses inspected", actions=report["actions"]
-                )
+        spec = registry.find(name)
+        if spec is not None:
+            outcome = await run_spec(spec, args)
         else:
             result = await session.call_tool(name, args)
             text, images = result_parts(result)
-        failed = text.startswith("TOOL ERROR:")
-        run.emit("tool_result", tool=name, text=text, is_error=failed)
-        if internal and failed:
-            raise RuntimeError(f"Required {name} operation failed")
-        image_messages = []
-        for block in images[:2]:
+            outcome = registry.ToolOutcome(
+                name=name,
+                text=text,
+                is_error=text.startswith("TOOL ERROR:"),
+                executed=not scripts.rejected_by_safe_mode(text.removeprefix("TOOL ERROR: ")),
+                images=images,
+            )
+        run.emit("tool_result", tool=name, text=outcome.text, is_error=outcome.is_error)
+        # Raw MCP image blocks in, model-ready image_url parts out.
+        blocks, outcome.images = outcome.images, []
+        if internal and outcome.is_error:
+            return outcome
+        for block in blocks[:2]:
             if block.mimeType not in {"image/png", "image/jpeg", "image/webp"}:
                 continue
             if len(block.data) > 12_000_000:
@@ -484,10 +601,17 @@ async def _loop(run, session, tools, provider, state=None):
             (run.directory / filename).write_bytes(raw)
             run.emit("image", file=filename, tool=name)
             if run.config.vision:
-                image_messages.append(
+                outcome.images.append(
                     {"type": "image_url", "image_url": {"url": f"data:{block.mimeType};base64,{block.data}"}}
                 )
-        return text, image_messages
+        return outcome
+
+    async def call(name, args, *, internal=False, readonly=False):
+        """(text, image parts) of one call; a failed internal call fails the run."""
+        outcome = await invoke(name, args, internal=internal, readonly=readonly)
+        if internal and outcome.is_error:
+            raise RuntimeError(f"Required {name} operation failed")
+        return outcome.text, outcome.images
 
     async def evidence():
         text, _ = await call("get_scene_info", {}, internal=True)
@@ -504,12 +628,7 @@ async def _loop(run, session, tools, provider, state=None):
             run.emit("simulation", message=f"DEMO: would save {filename}; no Blender file created")
             return
         path = (run.directory / filename).as_posix()
-        code = (
-            "import bpy\nbpy.ops.wm.save_as_mainfile(filepath="
-            + repr(path)
-            + ", copy=True)\nprint('Saved scene copy')"
-        )
-        text, _ = await call("execute_blender_code", {"code": code}, internal=True)
+        text, _ = await call("execute_blender_code", {"code": scripts.save_code(path)}, internal=True)
         if text.startswith("TOOL ERROR"):
             raise RuntimeError("Required scene save was denied or failed")
         if not (run.directory / filename).is_file():
@@ -536,6 +655,7 @@ async def _loop(run, session, tools, provider, state=None):
             for t in tools.values()
             if (not readonly or t.name in READ_ONLY)
             and (run.config.vision or t.name != "get_viewport_screenshot")
+            and t.name not in hidden
         ]
         if run.config.tool_mode == "json":
             messages.append(
@@ -620,14 +740,17 @@ async def _loop(run, session, tools, provider, state=None):
             run.save_state(messages, stage)
             for index, tool_call in enumerate(calls):
                 function = tool_call["function"]
+                outcome = None
                 try:
                     arguments = json.loads(function["arguments"])
+                except (json.JSONDecodeError, TypeError):
+                    text, pictures = "TOOL ERROR: arguments must be a JSON object", []
+                else:
                     if index >= 8:
                         text, pictures = "TOOL ERROR: maximum 8 tool calls per turn", []
                     else:
-                        text, pictures = await call(function["name"], arguments, readonly=readonly)
-                except (json.JSONDecodeError, TypeError):
-                    text, pictures = "TOOL ERROR: arguments must be a JSON object", []
+                        outcome = await invoke(function["name"], arguments, readonly=readonly)
+                        text, pictures = outcome.text, outcome.images
                 if run.config.tool_mode == "native":
                     messages.append(
                         {"role": "tool", "tool_call_id": tool_call["id"], "content": text or "Image captured"}
@@ -637,8 +760,10 @@ async def _loop(run, session, tools, provider, state=None):
                         {"role": "user", "content": "Tool result:\n" + (text or "Image captured")}
                     )
                 images.extend(pictures)
-                # Failed Python may have changed half the scene before raising.
-                mutated |= function["name"] in tools and function["name"] not in READ_ONLY and not readonly
+                # Failed Python may have changed half the scene before raising, so
+                # an error still counts. A call that never ran - denied, invalid,
+                # refused in a read-only phase or by safe mode - changed nothing.
+                mutated |= bool(outcome and outcome.executed and outcome.name not in READ_ONLY)
                 run.save_state(messages, stage)
             if images:
                 messages.append(
