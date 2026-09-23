@@ -13,9 +13,10 @@ from astra_blender.engine import Run, execute
 from astra_blender.live import BlenderHub, LiveScene
 from astra_blender.references import attach
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("ASTRA_LIVE_MCP_CONFIG"), reason="Requires disposable Blender"
-)
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(not os.environ.get("ASTRA_LIVE_MCP_CONFIG"), reason="Requires disposable Blender"),
+]
 
 
 async def test_reference_assembly_animation_and_motion_framing(tmp_path):

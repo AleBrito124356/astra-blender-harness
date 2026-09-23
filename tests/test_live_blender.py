@@ -12,6 +12,7 @@ from astra_blender.engine import Run, execute
 from astra_blender.live import BlenderHub, LiveScene
 
 
+@pytest.mark.live
 @pytest.mark.skipif(
     not os.environ.get("ASTRA_LIVE_MCP_CONFIG"), reason="Requires a disposable live Blender MCP session"
 )

@@ -16,6 +16,9 @@ dependencies = ["mcp>=1.26,<2", "litellm>=1.81,<2", "fastapi>=0.115,<1", "uvicor
 # Optional: lets Astra remember an API key in the OS keyring instead of asking
 # for it every session. Without it, profiles still save everything but the key.
 keyring = ["keyring>=25,<26"]
+# Optional: drive a local background Blender 5.2 instead of a live add-on
+# (astra_blender.headless). Needs blender-mcp for its safe-mode validator.
+headless = ["blender-mcp>=1.9.1,<2"]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "httpx>=0.28,<1", "ruff>=0.11,<1", "build>=1,<2", "keyring>=25,<26", "blender-mcp>=1.9.1,<2"]
 
 [project.scripts]
@@ -27,6 +30,10 @@ packages = ["src/astra_blender"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "blender: runs headless Blender 5.2 through astra_blender.headless; skipped when Blender is not installed (set ASTRA_BLENDER_EXE)",
+    "live: needs a disposable live Blender MCP session named by ASTRA_LIVE_MCP_CONFIG",
+]
 
 [tool.ruff]
 line-length = 110
