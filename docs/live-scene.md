@@ -61,9 +61,10 @@ The browser bundle is committed and included in the wheel; end users need no Nod
 ```sh
 npm ci
 npm run build
-# Start astra-blender serve in another terminal (port 8765 by default).
+# Start a test server in another terminal on a spare port, e.g.
+#   astra-blender serve --port 8766
 npx playwright install chromium
 npm run test:ui
 ```
 
-Set `ASTRA_TEST_URL` to the server's origin when it is not `http://127.0.0.1:8765`. Set `ASTRA_BROWSER_CHANNEL=msedge` to test with an installed Edge instead of downloading Chromium. Browser tests intercept every API request and never call a provider, read saved keys or edit Blender; the motion test drives baked playback against a mocked bake and asserts that the playhead endpoint is never called. Three.js's license is included in the packaged static/THIRD_PARTY_NOTICES.txt.
+The browser tests default to `http://127.0.0.1:8766`, never to 8765, where your everyday Astra server runs; set `ASTRA_TEST_URL` to the test server's origin when it is elsewhere. Set `ASTRA_BROWSER_CHANNEL=msedge` to test with an installed Edge instead of downloading Chromium. Browser tests intercept every API request and never call a provider, read saved keys or edit Blender; the motion test drives baked playback against a mocked bake and asserts that the playhead endpoint is never called. Three.js's license is included in the packaged static/THIRD_PARTY_NOTICES.txt.

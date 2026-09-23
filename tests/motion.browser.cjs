@@ -32,7 +32,7 @@ const assert=require('node:assert/strict');
    else throw new Error('Unexpected API: '+path);
    await route.fulfill({json:data});
   });
-  await page.goto(process.env.ASTRA_TEST_URL||'http://127.0.0.1:8765');
+  await page.goto(process.env.ASTRA_TEST_URL||'http://127.0.0.1:8766');
   await page.waitForFunction(()=>!document.querySelector('#reference-upload').disabled&&document.querySelector('#provider').options.length>0);
 
   // Reference upload and the vision gate.
