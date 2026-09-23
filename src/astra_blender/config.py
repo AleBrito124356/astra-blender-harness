@@ -81,6 +81,10 @@ class RunConfig(BaseModel):
     # the model finishes, another budget bites, or you press Stop.
     max_steps: int = Field(default=24, ge=0, le=2000)
     max_output_tokens: int = Field(default=4096, ge=512, le=16384)
+    # How long one model turn may take. Reasoning models think before their
+    # first token: a 2.8T MoE took longer than the old fixed 120 s, which was
+    # not a setting and could not be raised.
+    request_timeout: int = Field(default=300, ge=30, le=3600)
     max_total_tokens: int = Field(default=150000, ge=0, le=50_000_000)
     timeout_seconds: int = Field(default=1200, ge=0, le=86400)
     # Per-phase caps, previously hidden constants. Build defaulted to half of

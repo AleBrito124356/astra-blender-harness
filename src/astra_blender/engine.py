@@ -91,6 +91,13 @@ def provider_failure(cause):
     """
     status = getattr(cause, "status_code", None)
     body = str(getattr(cause, "message", "") or cause)
+    if "Timeout" in type(cause).__name__:
+        return (
+            f"{type(cause).__name__}: the model did not answer within the per-turn limit. "
+            "Reasoning models can think for minutes before their first token; raise "
+            "'Model response timeout' in Execution settings, and the run timeout with it. "
+            "Astra does not retry a timed-out turn, so nothing was billed twice."
+        )
     if "LLM Provider NOT provided" in body:
         hint = (
             "Astra could not route that model identifier. Prefix it with the provider that serves it, "

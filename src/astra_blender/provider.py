@@ -17,8 +17,11 @@ class LiteLLMProvider:
             model=self.config.model,
             messages=messages,
             max_tokens=self.config.max_output_tokens,
-            timeout=120,
-            num_retries=1,
+            timeout=self.config.request_timeout,
+            # Retries are handled here, not by LiteLLM, so a timeout is never one
+            # of them: a generation that ran out of time does not get faster on a
+            # second full attempt, and the provider has already billed the first.
+            num_retries=0,
         )
         if self.config.api_key.get_secret_value():
             kwargs["api_key"] = self.config.api_key.get_secret_value()
@@ -26,7 +29,11 @@ class LiteLLMProvider:
             kwargs["api_base"] = self.config.api_base
         if self.config.tool_mode == "native":
             kwargs["tools"] = tools
-        response = await litellm.acompletion(**kwargs)
+        try:
+            response = await litellm.acompletion(**kwargs)
+        except (litellm.APIConnectionError, litellm.InternalServerError):
+            # One retry for a transient failure, as documented.
+            response = await litellm.acompletion(**kwargs)
         if not response.choices or response.choices[0].finish_reason in {"length", "content_filter"}:
             raise RuntimeError("Provider response was truncated or filtered; phase is incomplete")
         message = response.choices[0].message.model_dump(exclude_none=True)

@@ -46,6 +46,12 @@ def main():
     run.add_argument("--quality", choices=["draft", "studio", "final"], default="studio")
     run.add_argument("--max-steps", type=int, default=24)
     run.add_argument(
+        "--request-timeout",
+        type=int,
+        default=300,
+        help="Seconds one model turn may take (raise for reasoning models)",
+    )
+    run.add_argument(
         "--reference",
         type=Path,
         action="append",
@@ -82,6 +88,7 @@ def main():
             auto_approve=args.auto_approve,
             quality=args.quality,
             max_steps=args.max_steps,
+            request_timeout=args.request_timeout,
             animation=args.animation,
             animation_frames=args.frames,
             animation_fps=args.fps,
