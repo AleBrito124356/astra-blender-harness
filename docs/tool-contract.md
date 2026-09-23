@@ -46,12 +46,12 @@ mistakes raise `RegistryError` at import, not mid-run.
 | `name` | `astra_` + lower_snake_case. |
 | `description` | What the model reads. 60 words or fewer, with units (m, degrees, frames). |
 | `schema` | JSON Schema of the model's arguments: `type: object`, `additionalProperties: false`, never `user_prompt`, never an injected name. |
-| `schema_small` | Optional reduced schema offered to the small tier (`registry.schema_for(name, "small")`). |
+| `schema_small` | Optional reduced schema for the small tier (`registry.schema_for(name, "small")`, `spec.as_tool("small")`). The foundation engine still offers `schema` to every model; WS6 switches by tier. |
 | `kind` | `"blender"` (a script runs in Blender) or `"harness"` (Python on the host). |
 | `scripts`, `entry`, `common` | Blender tools: files in `blender_scripts/`, the function the trailer calls, and whether `common.py` is prepended (default `True`; `False` only keeps a 0.3.2 script byte-identical). |
 | `handler` | Harness tools: `handler(args, ctx) -> PostResult`, plain or async. |
 | `readonly` | Never changes the scene: no approval, allowed in plan and review, no after-edit evidence. |
-| `destructive` | Always asks for approval, even with trusted-tool auto-approval; autofix never applies it. Enforced by WS6's approval policy. |
+| `destructive` | Always asks for approval, even with trusted-tool auto-approval; autofix never applies it. The foundation engine only records the flag (`registry.find(name).destructive`); WS6's approval policy enforces it. |
 | `expensive` | Counted against a per-run budget (WS6). |
 | `stages` | Subset of `plan, layout, look, motion, review, refine, finalize`. |
 | `tiers` | Subset of `small, medium, large`. |
