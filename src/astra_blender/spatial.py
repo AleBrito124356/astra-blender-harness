@@ -5,10 +5,6 @@ import math
 import re
 from pathlib import Path
 
-from mcp.types import Tool
-
-from . import motion
-
 SCRIPTS = Path(__file__).parent / "blender_scripts"
 MARKER = "ASTRA_SCENE_JSON:"
 
@@ -68,23 +64,6 @@ def merge_unchanged(snapshot, previous):
     return snapshot
 
 
-def frame_code(arguments):
-    return (
-        (SCRIPTS / "projection.py").read_text(encoding="utf-8")
-        + "\n"
-        + (SCRIPTS / "frame_camera.py").read_text(encoding="utf-8")
-        + (
-            "\nprint(astra_frame_camera("
-            + repr(arguments["objects"])
-            + ", "
-            + repr(arguments.get("margin", 0.12))
-            + ", "
-            + repr(arguments.get("frames"))
-            + "))"
-        )
-    )
-
-
 def bake_code(arguments):
     """Bake world matrices of every moving object across the scene frame range."""
     return (
@@ -97,39 +76,26 @@ def bake_code(arguments):
     )
 
 
-MOTION_FUNCTIONS = {
-    "astra_assemble_parts": ("assembly.py", "astra_assemble"),
-    "astra_place_on_ground": ("assembly.py", "astra_ground"),
-    "astra_keyframe_object": ("animation.py", "astra_keyframes"),
-    "astra_inspect_animation": ("animation.py", "astra_animation_report"),
-}
-
-
 def tool_code(name, args):
-    if name == "astra_inspect_scene":
-        return probe_code()
-    if name == "astra_frame_camera":
-        return frame_code(args)
-    script, function = MOTION_FUNCTIONS[name]
-    prefix = ""
-    if name in {"astra_inspect_animation", "astra_keyframe_object"}:
-        prefix = (
-            (SCRIPTS / "projection.py").read_text(encoding="utf-8")
-            + "\n"
-            + (SCRIPTS / "scene_probe.py").read_text(encoding="utf-8")
-            + "\n"
-        )
-    return (
-        prefix
-        + (SCRIPTS / script).read_text(encoding="utf-8")
-        + "\nimport json\nprint("
-        + repr(MARKER)
-        + " + json.dumps("
-        + function
-        + "(**"
-        + repr(args)
-        + "), allow_nan=False))"
-    )
+    """The script for one trusted tool call. A 0.3.2 entry point, kept as a shim:
+    the registry now builds every trusted script (scripts.build)."""
+    from . import registry, scripts
+
+    return scripts.build(registry.get(name), args)
+
+
+def __getattr__(name):
+    # MOTION_FUNCTIONS was the 0.3.2 dispatch table, name -> (script, function).
+    # It is derived from the registry on access, so it can never drift from it.
+    if name == "MOTION_FUNCTIONS":
+        from . import registry
+
+        return {
+            spec.name: (spec.scripts[-1], spec.entry)
+            for spec in registry.all_specs()
+            if spec.module == "astra_blender.tools.motion" and spec.kind == "blender"
+        }
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def parse_probe(result):
@@ -290,33 +256,8 @@ def diagnostics(snapshot):
 
 
 def tools():
-    return [
-        Tool(
-            name="astra_inspect_scene",
-            description="Read actual evaluated world bounds, dimensions, camera "
-            "projection, material assignments and current Blender API capabilities. Essential for text-only models. "
-            "No images and no scene changes.",
-            inputSchema={"type": "object", "properties": {}, "additionalProperties": False},
-        ),
-        Tool(
-            name="astra_frame_camera",
-            description="Fit the active Blender camera around exact subject object "
-            "names from astra_inspect_scene. Exclude huge floors/backgrounds. Modifies only the camera; preserves "
-            "its viewing direction. For animation pass up to five frames to fit combined motion bounds; restores playhead. Inspect again before rendering.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "objects": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100},
-                    "margin": {"type": "number", "minimum": 0.02, "maximum": 0.35},
-                    "frames": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 5,
-                        "items": {"type": "integer", "minimum": 1, "maximum": 100000},
-                    },
-                },
-                "required": ["objects"],
-                "additionalProperties": False,
-            },
-        ),
-    ] + motion.tools()
+    """The trusted tools the model may be offered, as MCP Tools. A 0.3.2 entry
+    point, kept as a shim over the registry."""
+    from . import registry
+
+    return [spec.as_tool() for spec in registry.all_specs() if not spec.hidden]

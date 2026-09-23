@@ -1,0 +1,220 @@
+[
+ {
+  "name": "astra_inspect_scene",
+  "description": "Read actual evaluated world bounds, dimensions, camera projection, material assignments and current Blender API capabilities. Essential for text-only models. No images and no scene changes.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {},
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "astra_frame_camera",
+  "description": "Fit the active Blender camera around exact subject object names from astra_inspect_scene. Exclude huge floors/backgrounds. Modifies only the camera; preserves its viewing direction. For animation pass up to five frames to fit combined motion bounds; restores playhead. Inspect again before rendering.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "objects": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "minItems": 1,
+     "maxItems": 100
+    },
+    "margin": {
+     "type": "number",
+     "minimum": 0.02,
+     "maximum": 0.35
+    },
+    "frames": {
+     "type": "array",
+     "minItems": 1,
+     "maxItems": 5,
+     "items": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000
+     }
+    }
+   },
+   "required": [
+    "objects"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "astra_assemble_parts",
+  "description": "Parent distinct parts to an Empty assembly root without moving them. Choose a main-body anchor; attached pieces get explicit gap checks. Assemble before animation/constraints. Include every glass panel, wheel and trim piece that must follow the root.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "root_name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 128
+    },
+    "names": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+     },
+     "minItems": 1,
+     "maxItems": 100,
+     "uniqueItems": true
+    },
+    "anchor": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 128
+    },
+    "max_gap": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 10
+    }
+   },
+   "required": [
+    "root_name",
+    "names",
+    "anchor"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "astra_place_on_ground",
+  "description": "Translate a whole assembly so its lowest evaluated mesh bound rests on a separate horizontal ground mesh. Preserves relative part positions. Use before root animation.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "root_name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 128
+    },
+    "ground_name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 128
+    },
+    "clearance": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 10
+    }
+   },
+   "required": [
+    "root_name",
+    "ground_name"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "astra_keyframe_object",
+  "description": "Create location/XYZ Euler rotation/scale keys on an unanimated object or assembly root. Values are LOCAL to its parent; rotations are radians. Use distinct increasing frames. Each animated channel needs two keys. Children inherit root motion. Existing actions/constraints are rejected to prevent silent overwrite; edit advanced rigs explicitly with bpy.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 128
+    },
+    "fps": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 60
+    },
+    "interpolation": {
+     "enum": [
+      "LINEAR",
+      "BEZIER",
+      "CONSTANT"
+     ]
+    },
+    "keys": {
+     "type": "array",
+     "minItems": 2,
+     "maxItems": 24,
+     "items": {
+      "type": "object",
+      "properties": {
+       "frame": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1440
+       },
+       "location": {
+        "type": "array",
+        "items": {
+         "type": "number",
+         "minimum": -100000,
+         "maximum": 100000
+        },
+        "minItems": 3,
+        "maxItems": 3
+       },
+       "rotation": {
+        "type": "array",
+        "items": {
+         "type": "number",
+         "minimum": -100000,
+         "maximum": 100000
+        },
+        "minItems": 3,
+        "maxItems": 3
+       },
+       "scale": {
+        "type": "array",
+        "items": {
+         "type": "number",
+         "minimum": 0.001,
+         "maximum": 1000
+        },
+        "minItems": 3,
+        "maxItems": 3
+       }
+      },
+      "required": [
+       "frame"
+      ],
+      "minProperties": 2,
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "name",
+    "keys"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "astra_inspect_animation",
+  "description": "Inspect action channels and evaluated poses at up to five frames (default start/middle/end). Temporarily changes the playhead and restores it in finally. Numerical evidence includes camera, ground and attachment checks; does not bake simulations.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "frames": {
+     "type": "array",
+     "items": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000
+     },
+     "minItems": 1,
+     "maxItems": 5,
+     "uniqueItems": true
+    }
+   },
+   "required": [],
+   "additionalProperties": false
+  }
+ }
+]

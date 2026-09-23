@@ -4,7 +4,9 @@ import bpy
 from mathutils import Matrix, Vector
 
 
-def astra_frame_camera(names, margin=0.12, frames=None):
+def astra_frame_camera(objects, margin=0.12, frames=None):
+    # Called with the tool's own argument names, like every registry tool.
+    names = list(objects)
     scene = bpy.context.scene
     if not names:
         raise ValueError(

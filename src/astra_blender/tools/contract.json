@@ -1,0 +1,1777 @@
+{
+ "version": 1,
+ "about": "The parallel-development contract for Astra 0.4. 'tools' lists every planned tool with the arguments fixes, recipes and prompts may rely on: names, types, enums and which are required. It is deliberately partial - a tool may accept more - and conservative - a caller that passes every pinned required argument is valid against the real tool. registry.contract_problems checks a registered spec against its entry; registry.check_args validates a planned call against the registered schema or, until the owner lands, against this entry. 'events' pins the run event payloads (docs/events.md).",
+ "tier_names": [
+  "small",
+  "medium",
+  "large"
+ ],
+ "stage_names": [
+  "plan",
+  "layout",
+  "look",
+  "motion",
+  "review",
+  "refine",
+  "finalize"
+ ],
+ "upstream_readonly": [
+  "get_object_info",
+  "get_scene_info",
+  "get_viewport_screenshot"
+ ],
+ "tools": {
+  "astra_scene_facts": {
+   "owner": "WS1",
+   "module": "astra_blender.tools.sight",
+   "kind": "blender",
+   "readonly": true,
+   "returns": "astra.facts/1",
+   "args": {
+    "type": "object",
+    "properties": {
+     "detail": {
+      "type": "string",
+      "enum": [
+       "minimal",
+       "compact",
+       "standard",
+       "full"
+      ]
+     },
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "grid": {
+      "type": "integer"
+     },
+     "layers": {
+      "type": "integer"
+     },
+     "contacts": {
+      "type": "boolean"
+     },
+     "meter": {
+      "type": "boolean"
+     },
+     "max_objects": {
+      "type": "integer"
+     }
+    },
+    "required": []
+   }
+  },
+  "astra_look_check": {
+   "owner": "WS1",
+   "module": "astra_blender.tools.sight",
+   "kind": "blender",
+   "readonly": true,
+   "injected": [
+    "save_to"
+   ],
+   "expensive": true,
+   "args": {
+    "type": "object",
+    "properties": {
+     "mode": {
+      "type": "string",
+      "enum": [
+       "beauty",
+       "ids",
+       "both"
+      ]
+     },
+     "width": {
+      "type": "integer"
+     },
+     "samples": {
+      "type": "integer"
+     },
+     "engine": {
+      "type": "string",
+      "enum": [
+       "BLENDER_EEVEE",
+       "BLENDER_WORKBENCH",
+       "CYCLES"
+      ]
+     }
+    },
+    "required": []
+   }
+  },
+  "astra_motion_facts": {
+   "owner": "WS1",
+   "module": "astra_blender.tools.sight",
+   "kind": "blender",
+   "readonly": true,
+   "returns": "astra.motion/1",
+   "args": {
+    "type": "object",
+    "properties": {
+     "subjects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "samples": {
+      "type": "integer"
+     },
+     "frames": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     },
+     "camera": {
+      "type": "boolean"
+     },
+     "strip": {
+      "type": "integer"
+     },
+     "wheels": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "object": {
+         "type": "string"
+        },
+        "radius_m": {
+         "type": "number"
+        }
+       },
+       "required": [
+        "object"
+       ]
+      }
+     }
+    },
+    "required": []
+   }
+  },
+  "astra_plan_view": {
+   "owner": "WS1",
+   "module": "astra_blender.tools.sight",
+   "kind": "blender",
+   "readonly": true,
+   "args": {
+    "type": "object",
+    "properties": {
+     "view": {
+      "type": "string",
+      "enum": [
+       "top",
+       "front",
+       "side"
+      ]
+     },
+     "grid": {
+      "type": "integer"
+     },
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "padding_m": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "view"
+    ]
+   }
+  },
+  "astra_inspect_scene": {
+   "owner": "WS1",
+   "module": "astra_blender.tools.sight",
+   "kind": "blender",
+   "readonly": true,
+   "note": "0.3.2 audit. WS1 makes it a hidden alias that returns the facts card; arguments stay {}.",
+   "args": {
+    "type": "object",
+    "properties": {},
+    "required": []
+   }
+  },
+  "astra_build_object": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "kind": {
+         "type": "string",
+         "enum": [
+          "box",
+          "cylinder",
+          "cone",
+          "sphere",
+          "torus",
+          "plane",
+          "capsule",
+          "tube",
+          "wedge",
+          "text"
+         ]
+        },
+        "size": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        },
+        "location": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        },
+        "rotation_deg": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        },
+        "origin": {
+         "type": "string",
+         "enum": [
+          "center",
+          "bottom"
+         ]
+        },
+        "segments": {
+         "type": "integer"
+        },
+        "bevel": {
+         "type": [
+          "string",
+          "number"
+         ]
+        },
+        "bevel_segments": {
+         "type": "integer"
+        },
+        "shading": {
+         "type": "string",
+         "enum": [
+          "auto",
+          "smooth",
+          "flat"
+         ]
+        },
+        "subdivision": {
+         "type": "integer"
+        },
+        "solidify": {
+         "type": "number"
+        },
+        "array": {
+         "type": "object",
+         "properties": {
+          "count": {
+           "type": "integer"
+          },
+          "offset": {
+           "type": "array",
+           "items": {
+            "type": "number"
+           }
+          }
+         },
+         "required": []
+        },
+        "mirror": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "enum": [
+           "x",
+           "y",
+           "z"
+          ]
+         }
+        },
+        "parent": {
+         "type": "string"
+        },
+        "material": {
+         "type": "string"
+        },
+        "text": {
+         "type": "string"
+        },
+        "collection": {
+         "type": "string"
+        },
+        "role": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "name",
+        "kind",
+        "size"
+       ]
+      }
+     }
+    },
+    "required": [
+     "objects"
+    ]
+   }
+  },
+  "astra_material": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "materials": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string"
+        },
+        "preset": {
+         "type": "string",
+         "enum": [
+          "plastic",
+          "painted_metal",
+          "car_paint",
+          "chrome",
+          "brushed_metal",
+          "gold",
+          "glass",
+          "frosted_glass",
+          "water",
+          "rubber",
+          "wood",
+          "concrete",
+          "brick",
+          "plaster",
+          "fabric",
+          "leather",
+          "ceramic",
+          "foliage",
+          "skin",
+          "grass_ground",
+          "dirt_ground",
+          "asphalt",
+          "emissive",
+          "neon"
+         ]
+        },
+        "objects": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "color": {
+         "type": [
+          "string",
+          "array"
+         ]
+        },
+        "roughness": {
+         "type": "number"
+        },
+        "metallic": {
+         "type": "number"
+        },
+        "emission_strength": {
+         "type": "number"
+        },
+        "variation": {
+         "type": "number"
+        },
+        "scale": {
+         "type": "number"
+        }
+       },
+       "required": [
+        "preset",
+        "objects"
+       ]
+      }
+     }
+    },
+    "required": [
+     "materials"
+    ]
+   }
+  },
+  "astra_arrange": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "source": {
+      "type": "string"
+     },
+     "pattern": {
+      "type": "string",
+      "enum": [
+       "line",
+       "grid",
+       "circle",
+       "scatter"
+      ]
+     },
+     "count": {
+      "type": "integer"
+     },
+     "spacing": {
+      "type": "number"
+     },
+     "rows": {
+      "type": "integer"
+     },
+     "radius": {
+      "type": "number"
+     },
+     "face_center": {
+      "type": "boolean"
+     },
+     "surface": {
+      "type": "string"
+     },
+     "area": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      }
+     },
+     "seed": {
+      "type": "integer"
+     },
+     "rotate_deg": {
+      "type": "number"
+     },
+     "scale_range": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      }
+     },
+     "min_distance": {
+      "type": "number"
+     },
+     "name_prefix": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "source",
+     "pattern",
+     "count"
+    ]
+   }
+  },
+  "astra_transform": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "edits": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "object": {
+         "type": "string"
+        },
+        "location": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        },
+        "rotation_deg": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        },
+        "scale": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        },
+        "dimensions": {
+         "type": "array",
+         "items": {
+          "type": [
+           "number",
+           "null"
+          ]
+         }
+        },
+        "apply_scale": {
+         "type": "boolean"
+        },
+        "make_single_user": {
+         "type": "boolean"
+        },
+        "visible": {
+         "type": "boolean"
+        },
+        "duplicate_as": {
+         "type": "string"
+        },
+        "drop_to": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "object"
+       ]
+      }
+     }
+    },
+    "required": [
+     "edits"
+    ]
+   }
+  },
+  "astra_place": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "relation": {
+      "type": "string",
+      "enum": [
+       "on",
+       "attached_to",
+       "next_to",
+       "in_front_of",
+       "behind",
+       "left_of",
+       "right_of",
+       "inside",
+       "centered_on"
+      ]
+     },
+     "target": {
+      "type": "string"
+     },
+     "gap": {
+      "type": "number"
+     },
+     "side": {
+      "type": "string",
+      "enum": [
+       "+x",
+       "-x",
+       "+y",
+       "-y",
+       "+z",
+       "-z"
+      ]
+     },
+     "align_to_normal": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "object",
+     "relation",
+     "target"
+    ]
+   }
+  },
+  "astra_repair_mesh": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "actions": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "recalc_normals",
+        "merge_doubles",
+        "dissolve_degenerate",
+        "apply_scale",
+        "smooth_shading",
+        "bevel"
+       ]
+      }
+     },
+     "angle_deg": {
+      "type": "number"
+     },
+     "bevel_width": {
+      "type": "number"
+     },
+     "bevel_segments": {
+      "type": "integer"
+     },
+     "make_single_user": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "objects",
+     "actions"
+    ]
+   }
+  },
+  "astra_cleanup": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "destructive": true,
+   "note": "Always asks for approval; autofix never applies it.",
+   "args": {
+    "type": "object",
+    "properties": {
+     "delete": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "dedupe": {
+      "type": "boolean"
+     },
+     "hide": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    },
+    "required": []
+   }
+  },
+  "astra_light_rig": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "subjects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "preset": {
+      "type": "string",
+      "enum": [
+       "three_point",
+       "studio_soft",
+       "product",
+       "dramatic",
+       "outdoor_day",
+       "golden_hour",
+       "overcast",
+       "night"
+      ]
+     },
+     "key_side": {
+      "type": "string",
+      "enum": [
+       "left",
+       "right"
+      ]
+     },
+     "key_azimuth_deg": {
+      "type": "number"
+     },
+     "key_elevation_deg": {
+      "type": "number"
+     },
+     "target_ev": {
+      "type": "number"
+     },
+     "fill_ratio": {
+      "type": "number"
+     },
+     "world_strength": {
+      "type": "number"
+     },
+     "hide_other_lights": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "subjects",
+     "preset"
+    ]
+   }
+  },
+  "astra_camera_shot": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "subjects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "shot": {
+      "type": "string",
+      "enum": [
+       "hero_3q",
+       "front",
+       "side",
+       "rear_3q",
+       "top_down",
+       "low_angle",
+       "eye_level",
+       "close_up",
+       "wide",
+       "product"
+      ]
+     },
+     "azimuth_deg": {
+      "type": "number"
+     },
+     "elevation_deg": {
+      "type": "number"
+     },
+     "lens_mm": {
+      "type": "number"
+     },
+     "margin": {
+      "type": "number"
+     },
+     "placement": {
+      "type": "string",
+      "enum": [
+       "center",
+       "left_third",
+       "right_third",
+       "low_third",
+       "high_third"
+      ]
+     },
+     "frames": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     },
+     "try_azimuths": {
+      "type": "integer"
+     },
+     "depth_of_field": {
+      "type": "boolean"
+     },
+     "fstop": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "subjects",
+     "shot"
+    ]
+   }
+  },
+  "astra_render_setup": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "preset": {
+      "type": "string",
+      "enum": [
+       "draft",
+       "preview",
+       "final",
+       "cycles_final"
+      ]
+     },
+     "resolution": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     },
+     "percentage": {
+      "type": "integer"
+     },
+     "look": {
+      "type": "string",
+      "enum": [
+       "None",
+       "Punchy",
+       "Base Contrast",
+       "High Contrast",
+       "Medium High Contrast",
+       "Medium Low Contrast",
+       "Low Contrast",
+       "Greyscale"
+      ]
+     },
+     "exposure": {
+      "type": "number"
+     },
+     "transparent": {
+      "type": "boolean"
+     },
+     "motion_blur": {
+      "type": "boolean"
+     },
+     "samples": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "preset"
+    ]
+   }
+  },
+  "astra_set_exposure": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "target_p50": {
+      "type": "number"
+     },
+     "max_iterations": {
+      "type": "integer"
+     }
+    },
+    "required": []
+   }
+  },
+  "astra_render": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "injected": [
+    "output_dir",
+    "start_from",
+    "budget_s"
+   ],
+   "chunk_key": "next_frame",
+   "args": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "still",
+       "frames"
+      ]
+     },
+     "filename": {
+      "type": "string"
+     },
+     "frame": {
+      "type": "integer"
+     },
+     "frames": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     },
+     "step": {
+      "type": "integer"
+     },
+     "percentage": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "kind",
+     "filename"
+    ]
+   }
+  },
+  "astra_encode_video": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "injected": [
+    "output_dir",
+    "pattern"
+   ],
+   "args": {
+    "type": "object",
+    "properties": {
+     "filename": {
+      "type": "string"
+     },
+     "frames": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     },
+     "step": {
+      "type": "integer"
+     },
+     "fps": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "filename",
+     "frames"
+    ]
+   }
+  },
+  "astra_frame_camera": {
+   "owner": "WS2",
+   "module": "astra_blender.tools.toolkit",
+   "kind": "blender",
+   "readonly": false,
+   "note": "0.3.2 camera fit; prints marker + JSON since 0.4. WS2 keeps it as a hidden alias of astra_camera_shot.",
+   "args": {
+    "type": "object",
+    "properties": {
+     "objects": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "margin": {
+      "type": "number"
+     },
+     "frames": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     }
+    },
+    "required": [
+     "objects"
+    ]
+   }
+  },
+  "astra_animate": {
+   "owner": "WS3",
+   "module": "astra_blender.tools.motion",
+   "kind": "blender",
+   "readonly": false,
+   "note": "params accepted per preset are validated host-side; only the pinned keys are shared.",
+   "args": {
+    "type": "object",
+    "properties": {
+     "preset": {
+      "type": "string",
+      "enum": [
+       "turntable",
+       "orbit_camera",
+       "dolly",
+       "follow_camera",
+       "fly_in",
+       "pop_in",
+       "bounce",
+       "drive",
+       "hinge",
+       "float",
+       "pulse_light",
+       "shake",
+       "keys"
+      ]
+     },
+     "targets": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "start": {
+      "type": "integer"
+     },
+     "end": {
+      "type": "integer"
+     },
+     "easing": {
+      "type": "string",
+      "enum": [
+       "linear",
+       "smooth",
+       "ease_in",
+       "ease_out",
+       "ease_in_out",
+       "gravity",
+       "back",
+       "bounce",
+       "elastic",
+       "sine",
+       "constant"
+      ]
+     },
+     "mode": {
+      "type": "string",
+      "enum": [
+       "replace",
+       "add"
+      ]
+     },
+     "fps": {
+      "type": "integer"
+     },
+     "params": {
+      "type": "object",
+      "properties": {
+       "degrees": {
+        "type": "number"
+       },
+       "turns": {
+        "type": "number"
+       },
+       "distance": {
+        "type": "number"
+       },
+       "height": {
+        "type": "number"
+       },
+       "bounces": {
+        "type": "integer"
+       },
+       "angle_deg": {
+        "type": "number"
+       },
+       "cyclic": {
+        "type": "boolean"
+       }
+      },
+      "required": []
+     }
+    },
+    "required": [
+     "preset",
+     "targets"
+    ]
+   }
+  },
+  "astra_explode": {
+   "owner": "WS3",
+   "module": "astra_blender.tools.motion",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "assembly": {
+      "type": "string"
+     },
+     "parts": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "moving": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "action": {
+      "type": "string",
+      "enum": [
+       "explode",
+       "assemble",
+       "explode_and_return",
+       "pose"
+      ]
+     },
+     "style": {
+      "type": "string",
+      "enum": [
+       "radial",
+       "axis",
+       "stack",
+       "custom"
+      ]
+     },
+     "axis": {
+      "type": "string",
+      "enum": [
+       "+x",
+       "-x",
+       "+y",
+       "-y",
+       "+z",
+       "-z"
+      ]
+     },
+     "directions": {
+      "type": "object"
+     },
+     "distance": {
+      "type": "number"
+     },
+     "min_gap_m": {
+      "type": "number"
+     },
+     "order": {
+      "type": "string",
+      "enum": [
+       "outside_in",
+       "inside_out",
+       "by_size",
+       "by_name",
+       "sequence"
+      ]
+     },
+     "sequence": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "stagger": {
+      "type": "integer"
+     },
+     "frames": {
+      "type": "object",
+      "properties": {
+       "start": {
+        "type": "integer"
+       },
+       "peak": {
+        "type": "integer"
+       },
+       "hold": {
+        "type": "integer"
+       },
+       "end": {
+        "type": "integer"
+       }
+      },
+      "required": []
+     },
+     "easing": {
+      "type": "string"
+     },
+     "spin_deg": {
+      "type": "number"
+     },
+     "callouts": {
+      "type": "boolean"
+     }
+    },
+    "required": []
+   }
+  },
+  "astra_split_parts": {
+   "owner": "WS3",
+   "module": "astra_blender.tools.motion",
+   "kind": "blender",
+   "readonly": false,
+   "args": {
+    "type": "object",
+    "properties": {
+     "object": {
+      "type": "string"
+     },
+     "by": {
+      "type": "string",
+      "enum": [
+       "loose_parts",
+       "material",
+       "vertex_group"
+      ]
+     },
+     "name_prefix": {
+      "type": "string"
+     },
+     "min_faces": {
+      "type": "integer"
+     },
+     "max_parts": {
+      "type": "integer"
+     },
+     "keep_original": {
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "object",
+     "by"
+    ]
+   }
+  },
+  "astra_assemble_parts": {
+   "owner": "WS3",
+   "module": "astra_blender.tools.motion",
+   "kind": "blender",
+   "readonly": false,
+   "note": "0.3.2 argument names are kept ('Args are unchanged'); WS3 adds order?: string[].",
+   "args": {
+    "type": "object",
+    "properties": {
+     "root_name": {
+      "type": "string"
+     },
+     "names": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "anchor": {
+      "type": "string"
+     },
+     "max_gap": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "root_name",
+     "names",
+     "anchor"
+    ]
+   }
+  },
+  "astra_place_on_ground": {
+   "owner": "WS3",
+   "module": "astra_blender.tools.motion",
+   "kind": "blender",
+   "readonly": false,
+   "note": "WS3 may make ground_name optional (the floor is then found geometrically); callers keep passing it.",
+   "args": {
+    "type": "object",
+    "properties": {
+     "root_name": {
+      "type": "string"
+     },
+     "ground_name": {
+      "type": "string"
+     },
+     "clearance": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "root_name",
+     "ground_name"
+    ]
+   }
+  },
+  "astra_keyframe_object": {
+   "owner": "WS3",
+   "module": "astra_blender.tools.motion",
+   "kind": "blender",
+   "readonly": false,
+   "note": "rotation stays in radians. WS3 v2 adds replace, mode, cyclic and per-key interpolation/easing.",
+   "args": {
+    "type": "object",
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "fps": {
+      "type": "integer"
+     },
+     "interpolation": {
+      "type": "string",
+      "enum": [
+       "LINEAR",
+       "BEZIER",
+       "CONSTANT"
+      ]
+     },
+     "keys": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "frame": {
+         "type": "integer"
+        },
+        "location": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        },
+        "rotation": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        },
+        "scale": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         }
+        }
+       },
+       "required": [
+        "frame"
+       ]
+      }
+     }
+    },
+    "required": [
+     "name",
+     "keys"
+    ]
+   }
+  },
+  "astra_inspect_animation": {
+   "owner": "WS3",
+   "module": "astra_blender.tools.motion",
+   "kind": "blender",
+   "readonly": true,
+   "note": "0.3.2 report. 0.4 menus offer astra_motion_facts instead; WS3 keeps this as a hidden alias.",
+   "args": {
+    "type": "object",
+    "properties": {
+     "frames": {
+      "type": "array",
+      "items": {
+       "type": "integer"
+      }
+     }
+    },
+    "required": []
+   }
+  },
+  "astra_set_spec": {
+   "owner": "WS4",
+   "module": "astra_blender.tools.judge",
+   "kind": "harness",
+   "readonly": true,
+   "returns": "{accepted, errors, filled, planned_checks, table}",
+   "args": {
+    "type": "object",
+    "properties": {
+     "spec": {
+      "type": "object"
+     },
+     "accept_draft": {
+      "type": "boolean"
+     },
+     "edits": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "op": {
+         "type": "string",
+         "enum": [
+          "add",
+          "remove",
+          "set"
+         ]
+        },
+        "path": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "op",
+        "path"
+       ]
+      }
+     }
+    },
+    "required": []
+   }
+  },
+  "astra_check": {
+   "owner": "WS4",
+   "module": "astra_blender.tools.judge",
+   "kind": "harness",
+   "readonly": true,
+   "returns": "{score, areas, passed, total, blocking, failing, resolved, new, regressed, delta}",
+   "args": {
+    "type": "object",
+    "properties": {
+     "areas": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "presence",
+        "scale",
+        "placement",
+        "materials",
+        "lighting",
+        "camera",
+        "motion",
+        "render"
+       ]
+      }
+     },
+     "limit": {
+      "type": "integer"
+     }
+    },
+    "required": []
+   }
+  },
+  "astra_api_lookup": {
+   "owner": "WS5",
+   "module": "astra_blender.tools.guard",
+   "kind": "blender",
+   "readonly": true,
+   "note": "target: scene.render | scene.eevee | scene.cycles | scene.view_settings | world | light:<object> | material:<name> | object:<name> | modifier:<TYPE> | node:<bl_idname>",
+   "args": {
+    "type": "object",
+    "properties": {
+     "target": {
+      "type": "string"
+     },
+     "filter": {
+      "type": "string"
+     },
+     "limit": {
+      "type": "integer"
+     }
+    },
+    "required": [
+     "target"
+    ]
+   }
+  }
+ },
+ "events": {
+  "started": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "model": "str",
+    "quality": "str",
+    "prompt": "str",
+    "output_dir": "str"
+   }
+  },
+  "connected": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "tools": "list[str]"
+   }
+  },
+  "resumed": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "stage": "str",
+    "previous_steps": "int"
+   }
+  },
+  "phase": {
+   "owner": "engine/WS6",
+   "since": "0.3",
+   "fields": {
+    "phase": "str"
+   },
+   "note": "0.4 phases: plan, layout, look, motion, review, refine, finalize"
+  },
+  "usage": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "steps": "int",
+    "total_tokens": "int"
+   }
+  },
+  "assistant": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "text": "str"
+   }
+  },
+  "repair": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "message": "str"
+   }
+  },
+  "approval": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "approval_id": "str",
+    "tool": "str",
+    "arguments": "dict",
+    "summary?": "str",
+    "code?": "str"
+   },
+   "note": "summary since 0.4 foundation (ToolSpec.summarize); code by WS6 for guarded raw Python"
+  },
+  "decision": {
+   "owner": "server",
+   "since": "0.3",
+   "fields": {
+    "approval_id": "str",
+    "approved": "bool"
+   }
+  },
+  "denied": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "tool": "str"
+   }
+  },
+  "deadline": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "waited_seconds": "float"
+   }
+  },
+  "tool_call": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "tool": "str",
+    "arguments": "dict",
+    "internal": "bool"
+   }
+  },
+  "tool_result": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "tool": "str",
+    "text": "str",
+    "is_error": "bool"
+   }
+  },
+  "image": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "file": "str",
+    "tool": "str"
+   }
+  },
+  "quality": {
+   "owner": "tools.sight",
+   "since": "0.3",
+   "fields": {
+    "issues": "list",
+    "message": "str"
+   },
+   "note": "astra_inspect_scene post hook"
+  },
+  "animation": {
+   "owner": "tools.motion",
+   "since": "0.3",
+   "fields": {
+    "message": "str",
+    "actions": "list"
+   },
+   "note": "astra_inspect_animation post hook"
+  },
+  "simulation": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "message": "str"
+   }
+  },
+  "demo": {
+   "owner": "server",
+   "since": "0.3",
+   "fields": {
+    "message": "str"
+   }
+  },
+  "artifact": {
+   "owner": "engine/WS2",
+   "since": "0.3",
+   "fields": {
+    "file": "str",
+    "message?": "str",
+    "role?": "primary|scene|report|evidence|trace"
+   },
+   "note": "role since 0.4"
+  },
+  "evidence": {
+   "owner": "WS1/WS6",
+   "since": "0.4",
+   "fields": {
+    "kind": "card|changes|stub",
+    "tier": "small|medium|large",
+    "tokens": "int",
+    "text": "str"
+   }
+  },
+  "spec": {
+   "owner": "WS4",
+   "since": "0.4",
+   "fields": {
+    "source": "draft|model|amended",
+    "table": "str",
+    "file": "str"
+   }
+  },
+  "qa": {
+   "owner": "WS4",
+   "since": "0.4",
+   "fields": {
+    "score": "float|None",
+    "areas": "dict",
+    "blocking": "list[str]",
+    "failing": "list[check] (12 at most)",
+    "delta": "float|None",
+    "file": "str"
+   }
+  },
+  "look": {
+   "owner": "WS1",
+   "since": "0.4",
+   "fields": {
+    "file": "str",
+    "engine": "str",
+    "luma": "dict",
+    "clipped_pct": "float",
+    "crushed_pct": "float",
+    "exposure_hint_stops": "float"
+   }
+  },
+  "motion": {
+   "owner": "WS1",
+   "since": "0.4",
+   "fields": {
+    "range": "list[int]",
+    "movers": "list[str]",
+    "issues": "int",
+    "file": "str"
+   }
+  },
+  "render": {
+   "owner": "WS2",
+   "since": "0.4",
+   "fields": {
+    "kind": "still|frames|video",
+    "files": "list[str]",
+    "progress": "[done, total]"
+   }
+  },
+  "guard": {
+   "owner": "WS5",
+   "since": "0.4",
+   "fields": {
+    "rule": "str",
+    "line": "int|None",
+    "hint": "str"
+   }
+  },
+  "autofix": {
+   "owner": "WS6",
+   "since": "0.4",
+   "fields": {
+    "check": "str",
+    "tool": "str",
+    "arguments": "dict"
+   }
+  },
+  "regression": {
+   "owner": "WS6",
+   "since": "0.4",
+   "fields": {
+    "check": "str",
+    "call": "str"
+   }
+  },
+  "completed": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "message": "str"
+   }
+  },
+  "failed": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "message": "str"
+   }
+  },
+  "cancelled": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "message": "str"
+   }
+  },
+  "budget_exhausted": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "message": "str"
+   }
+  },
+  "incomplete": {
+   "owner": "engine",
+   "since": "0.3",
+   "fields": {
+    "message": "str"
+   }
+  }
+ }
+}
