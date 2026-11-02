@@ -4,18 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astra-blender-harness"
-version = "0.3.2"
-description = "A local, model-agnostic Blender MCP studio with visual feedback and bounded agent runs."
+version = "0.4.0"
+description = "Guarded Blender for AI agents and models: MCP server, headless Blender, Astra Guard, after-edit audits, live 3D viewer and a bounded studio loop."
 readme = "README.md"
+keywords = ["blender", "bpy", "mcp", "ai-agents", "3d", "headless", "claude-code", "guardrails"]
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Alejandro Brito"}]
-dependencies = ["mcp>=1.26,<2", "litellm>=1.81,<2", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "jsonschema>=4.23,<5", "httpx>=0.28,<1", "Pillow>=11,<13"]
+dependencies = ["mcp>=1.30,<2", "litellm>=1.81,<2", "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "jsonschema>=4.23,<5", "httpx>=0.28,<1", "Pillow>=11,<13"]
 
 [project.optional-dependencies]
 # Optional: lets Astra remember an API key in the OS keyring instead of asking
 # for it every session. Without it, profiles still save everything but the key.
 keyring = ["keyring>=25,<26"]
+# Optional: a headless Blender inside this interpreter. bpy 5.x wheels need
+# Python 3.13 and bpy 4.5 wheels Python 3.11; other versions have none.
+headless = ["bpy>=4.5"]
 dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "httpx>=0.28,<1", "ruff>=0.11,<1", "build>=1,<2", "keyring>=25,<26"]
 
 [project.scripts]
@@ -26,6 +30,7 @@ packages = ["src/astra_blender"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [tool.ruff]

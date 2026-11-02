@@ -1,0 +1,78 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.11', '3.13']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m ruff check src tests
+      - run: python -m ruff format --check src tests
+      - run: python -m pytest -q
+      - run: python -m build
+
+  blender:
+    # The integration tests that need Blender, against a real headless Blender
+    # from the bpy wheel: full engine runs, the MCP server driven by an MCP
+    # client, motion, checkpoints and the worker's token check. No GUI, no API key.
+    name: Real Blender (bpy ${{ matrix.bpy }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bpy: '5.2.*'
+            python: '3.13'
+          - bpy: '4.5.*'
+            python: '3.11'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1
+      - run: python -m pip install -e ".[dev]" "bpy==${{ matrix.bpy }}" "blender-quality-lab @ git+https://github.com/AleBrito124356/blender-quality-lab"
+      - run: python -m pytest -q tests/test_backends.py tests/test_live_blender.py tests/test_live_motion.py tests/test_mcp_server.py
+        env:
+          ASTRA_BLENDER: python
+
+  studio-ui:
+    name: Studio browser checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python -m pip install -e .
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: The committed viewer bundle matches its source
+        run: npm run build && git diff --exit-code src/astra_blender/static/viewer.bundle.js
+      - name: Browser checks (every API call is intercepted)
+        run: |
+          astra-blender serve --port 8766 --output "$RUNNER_TEMP/runs" &
+          for i in $(seq 30); do curl -sf http://127.0.0.1:8766/api/session >/dev/null && break; sleep 1; done
+          npm run test:ui
+        env:
+          ASTRA_TEST_URL: http://127.0.0.1:8766

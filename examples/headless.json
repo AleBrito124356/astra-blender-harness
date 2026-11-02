@@ -1,0 +1,7 @@
+{
+  "transport": "headless",
+  "blender": "/path/to/python3.13-with-bpy-or/blender",
+  "blend_file": null,
+  "preview_engine": "auto",
+  "guard": true
+}

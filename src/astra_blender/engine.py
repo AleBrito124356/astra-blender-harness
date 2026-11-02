@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jsonschema import ValidationError, validate
 
-from . import motion, references, spatial
+from . import guard, motion, quality, references, spatial
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig
 from .history import repair_history
@@ -51,6 +51,7 @@ READ_ONLY = {
     "get_viewport_screenshot",
     "astra_inspect_scene",
     "astra_inspect_animation",
+    "astra_quality_check",
 }
 # "incomplete": the scene was built and saved, but a requested deliverable
 # (so far, animation) is missing. Continuable, and not a failure of anything.
@@ -129,9 +130,16 @@ class Run:
         self.approvals = {}
         self.steps = 0
         self.total_tokens = 0
+        # Input tokens the provider read from its prompt cache (billed at a fraction).
+        self.cached_tokens = 0
         self.created_at = time.time()
         # Set by execute(); lets a human approval pause the run deadline.
         self.deadline = None
+        # Astra Guard on model-written Python; execute() takes it from the
+        # Blender connection settings.
+        self.guard = True
+        # Set by execute() for Blender processes Astra owns (headless).
+        self.blender_session = None
         self.waited_for_approval = 0.0
         # The live conversation and phase, so execute() can persist a run
         # that stopped early without reaching back into the loop.
@@ -174,6 +182,10 @@ class Run:
         Blender, so a resumed run re-inspects rather than trusting this copy."""
         state = {
             "schema_version": 1,
+            "id": self.id,
+            # Which Blender process held the scene. A headless Blender dies
+            # with Astra; a resumed run started in a new one reopens the copy.
+            "blender_session": self.blender_session,
             "stage": stage,
             "steps": self.steps,
             "total_tokens": self.total_tokens,
@@ -260,6 +272,35 @@ def first_cause(error):
     return leaves[0] if leaves else error
 
 
+SCENE_COPIES = ("stopped.blend", "scene.blend", "refine.blend", "build.blend", "checkpoint.blend")
+RUN_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+async def rescue_scene(run, session):
+    """Keep a copy of a headless scene when the run stops early.
+
+    A headless Blender ends with Astra, so continuing such a run later needs a
+    file to reopen. Best effort, bounded, and never the reason a run fails.
+    """
+    path = (run.directory / "stopped.blend").as_posix()
+    code = "import bpy\nbpy.ops.wm.save_as_mainfile(filepath=" + repr(path) + ", copy=True)\nprint('Saved')"
+    try:
+        async with asyncio.timeout(30):
+            result = await session.call_tool("execute_blender_code", {"code": code})
+        if (
+            not result_parts(result)[0].startswith("TOOL ERROR")
+            and (run.directory / "stopped.blend").is_file()
+        ):
+            run.emit("artifact", file="stopped.blend", message="Scene copy kept so this run can be continued")
+    except Exception:
+        pass
+
+
+def latest_scene(directory):
+    found = [directory / name for name in SCENE_COPIES if (directory / name).is_file()]
+    return max(found, key=lambda path: path.stat().st_mtime) if found else None
+
+
 def result_parts(result):
     texts, images = [], []
     for block in result.content:
@@ -276,6 +317,7 @@ def result_parts(result):
 
 async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=connect, state=None):
     provider = provider or LiteLLMProvider(run.config)
+    run.guard = getattr(mcp_config, "guard", True)
     run.status = "running"
     run.emit(
         "started",
@@ -290,8 +332,14 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
             run.deadline = deadline
             async with connector(mcp_config) as session:
                 tools = await discover(session, mcp_config.allowed_tools)
+                run.blender_session = (getattr(session, "info", None) or {}).get("session_id")
                 run.emit("connected", tools=list(tools))
-                await _loop(run, session, tools, provider, state)
+                try:
+                    await _loop(run, session, tools, provider, state)
+                except Exception as stop:
+                    if run.blender_session and not isinstance(first_cause(stop), AnimationIncomplete):
+                        await rescue_scene(run, session)
+                    raise
         run.status = "completed"
         run.emit("completed", message="Quality loop finished. Inspect the scene before production use.")
     except (Exception, asyncio.CancelledError, BaseExceptionGroup) as error:
@@ -335,6 +383,7 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
             "quality": run.config.quality,
             "steps": run.steps,
             "total_tokens": run.total_tokens,
+            "cached_tokens": run.cached_tokens,
             "elapsed_seconds": round(time.time() - run.created_at, 2),
             "awaiting_approval_seconds": round(run.waited_for_approval, 2),
             "files": sorted(p.name for p in run.directory.iterdir() if p.is_file()),
@@ -344,6 +393,9 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
 
 async def _loop(run, session, tools, provider, state=None):
     tools = {**tools, **{tool.name: tool for tool in spatial.tools()}}
+    lab = quality.lab()
+    if lab is not None:
+        tools["astra_quality_check"] = quality.tool()
     messages = [
         {"role": "system", "content": SYSTEM},
         {
@@ -436,12 +488,35 @@ async def _loop(run, session, tools, provider, state=None):
             validate(args, tools[name].inputSchema)
         except ValidationError as error:
             return "TOOL ERROR: invalid arguments: " + error.message[:500], []
+        if name == "execute_blender_code" and not internal and run.guard:
+            # Before the approval prompt: nobody should be asked to approve a
+            # script that would be refused anyway.
+            try:
+                guard.validate(args.get("code", ""))
+            except guard.GuardRejected as error:
+                run.emit(
+                    "guard",
+                    tool=name,
+                    message="Astra Guard refused a script before it reached Blender: " + str(error),
+                    violations=[str(v) for v in error.violations],
+                )
+                return guard.rejection_text(error), []
         if not await run.approve(name, args):
             run.emit("denied", tool=name)
             return "TOOL ERROR: user denied this action; do not repeat it", []
         run.emit("tool_call", tool=name, arguments=args, internal=internal)
         # Do not automatically retry a mutation: its result may be uncertain after timeout.
-        if name in {"astra_inspect_scene", "astra_frame_camera", *spatial.MOTION_FUNCTIONS}:
+        if name == "astra_quality_check":
+            result = await session.call_tool("execute_blender_code", {"code": quality.code(lab, args)})
+            text, images = result_parts(result)
+            if text.startswith("TOOL ERROR:"):
+                text += quality.SAFE_MODE_HINT
+            else:
+                text, inspection, report = quality.summary(lab, text, bool(args.get("strict_contact")))
+                (run.directory / "inspection.json").write_text(json.dumps(inspection), encoding="utf-8")
+                (run.directory / "technical.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+                run.emit("lab", message=text.split("\n", 1)[0])
+        elif name in {"astra_inspect_scene", "astra_frame_camera", *spatial.MOTION_FUNCTIONS}:
             code = spatial.tool_code(name, args)
             backend_args = {"code": code}
             if "user_prompt" in tools["execute_blender_code"].inputSchema.get("properties", {}):
@@ -516,6 +591,25 @@ async def _loop(run, session, tools, provider, state=None):
             raise RuntimeError("Reported scene save is missing from the shared output directory")
         run.emit("artifact", file=filename, message="Scene copy verified on disk")
 
+    if state and run.blender_session and state.get("blender_session") != run.blender_session:
+        # This Blender never saw the earlier run's scene: reopen its newest copy.
+        previous = str(state.get("id") or "")
+        source = latest_scene(run.directory.parent / previous) if RUN_ID.match(previous) else None
+        if source is None:
+            run.emit(
+                "restored",
+                message="The run being continued left no scene copy; continuing from the open scene.",
+            )
+        else:
+            code = (
+                "import bpy\nbpy.ops.wm.open_mainfile(filepath="
+                + repr(source.as_posix())
+                + ", load_ui=False, use_scripts=False)\nprint(len(bpy.context.scene.objects))"
+            )
+            text, _ = await call("execute_blender_code", {"code": code}, internal=True)
+            run.emit(
+                "restored", file=source.name, message=f"Reopened {source.name} from the run being continued"
+            )
     await evidence()
     await save("checkpoint.blend")
     stages = STAGES if run.config.quality != "draft" else [s for s in STAGES if s[0] != "refine"]
@@ -583,7 +677,13 @@ async def _loop(run, session, tools, provider, state=None):
                 [{k: v for k, v in m.items() if k != "astra_reference"} for m in messages], offered
             )
             run.total_tokens += usage.get("total_tokens", 0) or 0
-            run.emit("usage", steps=run.steps, total_tokens=run.total_tokens)
+            details = usage.get("prompt_tokens_details") or {}
+            run.cached_tokens += (
+                (details.get("cached_tokens") if isinstance(details, dict) else 0)
+                or usage.get("cache_read_input_tokens")
+                or 0
+            )
+            run.emit("usage", steps=run.steps, total_tokens=run.total_tokens, cached_tokens=run.cached_tokens)
             calls = []
             if run.config.tool_mode == "json":
                 messages.append({"role": "assistant", "content": message.get("content") or ""})
