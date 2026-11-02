@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jsonschema import ValidationError, validate
 
-from . import motion, references, spatial
+from . import guard, motion, references, spatial
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig
 from .history import repair_history
@@ -132,6 +132,9 @@ class Run:
         self.created_at = time.time()
         # Set by execute(); lets a human approval pause the run deadline.
         self.deadline = None
+        # Astra Guard on model-written Python; execute() takes it from the
+        # Blender connection settings.
+        self.guard = True
         self.waited_for_approval = 0.0
         # The live conversation and phase, so execute() can persist a run
         # that stopped early without reaching back into the loop.
@@ -276,6 +279,7 @@ def result_parts(result):
 
 async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=connect, state=None):
     provider = provider or LiteLLMProvider(run.config)
+    run.guard = getattr(mcp_config, "guard", True)
     run.status = "running"
     run.emit(
         "started",
@@ -436,6 +440,19 @@ async def _loop(run, session, tools, provider, state=None):
             validate(args, tools[name].inputSchema)
         except ValidationError as error:
             return "TOOL ERROR: invalid arguments: " + error.message[:500], []
+        if name == "execute_blender_code" and not internal and run.guard:
+            # Before the approval prompt: nobody should be asked to approve a
+            # script that would be refused anyway.
+            try:
+                guard.validate(args.get("code", ""))
+            except guard.GuardRejected as error:
+                run.emit(
+                    "guard",
+                    tool=name,
+                    message="Astra Guard refused a script before it reached Blender: " + str(error),
+                    violations=[str(v) for v in error.violations],
+                )
+                return guard.rejection_text(error), []
         if not await run.approve(name, args):
             run.emit("denied", tool=name)
             return "TOOL ERROR: user denied this action; do not repeat it", []

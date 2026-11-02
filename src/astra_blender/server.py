@@ -15,9 +15,10 @@ from pydantic import Field as PydField
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, catalog, profiles, references
+from .backends import BlenderUnavailable
 from .bridge import discover
 from .config import MCPConfig, RunConfig, validate_api_base
-from .engine import TERMINAL, Run, execute, result_parts
+from .engine import TERMINAL, Run, execute, first_cause, result_parts
 from .live import BlenderHub, LiveScene
 
 RUN_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -72,8 +73,12 @@ def _read_json(path):
         return None
 
 
-def create_app(config=None, output=None):
+def create_app(config=None, output=None, hub=None, live_scene=None):
+    """The studio. `hub`/`live_scene` share an existing Blender connection - the
+    MCP server passes its own so the viewer shows what the agent is doing - and
+    stay owned by the caller."""
     config = config or MCPConfig()
+    owned = hub is None
     static = Path(__file__).parent / "static"
     # Static files are read from disk per request; the Python module is not.
     # A git pull with the server running leaves the browser newer than the
@@ -83,8 +88,8 @@ def create_app(config=None, output=None):
     token = secrets.token_urlsafe(32)
     runs = {}
     busy = asyncio.Lock()
-    hub = BlenderHub(config)
-    live_scene = LiveScene(hub)
+    hub = hub or BlenderHub(config)
+    live_scene = live_scene or LiveScene(hub)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -93,8 +98,9 @@ def create_app(config=None, output=None):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await live_scene.close()
-        await hub.close()
+        if owned:
+            await live_scene.close()
+            await hub.close()
 
     app = FastAPI(title="Astra Blender Harness", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.runs = runs
@@ -165,8 +171,9 @@ def create_app(config=None, output=None):
             "assets_newer_than_server": assets_changed_after_start(),
             "token": token,
             "transport": config.transport,
+            "guard": config.guard,
             "version": __version__,
-            "features": ["live_scene", "references", "animation", "motion_bake"],
+            "features": ["live_scene", "references", "animation", "motion_bake", "headless", "guard"],
         }
 
     @app.post("/api/references", dependencies=[Depends(auth)])
@@ -249,10 +256,20 @@ def create_app(config=None, output=None):
                         result = await client.call_tool("get_scene_info", arguments)
                         if result_parts(result)[0].startswith("TOOL ERROR:"):
                             raise RuntimeError("Blender unavailable")
-                        return {"ok": True, "tools": list(tools)}
-            except Exception:
+                        return {
+                            "ok": True,
+                            "tools": list(tools),
+                            "backend": hub.backend,
+                            "blender": hub.info.get("blender_version"),
+                        }
+            except Exception as error:
+                cause = first_cause(error)
+                if isinstance(cause, BlenderUnavailable):
+                    # Our own message: it names what to start or install, never a secret.
+                    raise HTTPException(503, str(cause).splitlines()[0])
                 raise HTTPException(
-                    503, "Cannot reach Blender. Check the MCP command, add-on and its Start button."
+                    503,
+                    "Cannot reach Blender. Check the connection settings, the add-on and its Start button.",
                 )
 
     @app.get("/api/scene/live", dependencies=[Depends(auth)])

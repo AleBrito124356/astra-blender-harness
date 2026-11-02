@@ -1,0 +1,19 @@
+{
+  "name": "astra-blender",
+  "version": "0.4.0",
+  "description": "Guarded Blender for AI agents: build scenes in your open Blender (Blender MCP add-on) or a headless Blender, with static checks on model-written Python, an audit after every edit, reviewed camera/assembly/animation tools, checkpoints, quality gates and a live 3D viewer.",
+  "author": {
+    "name": "Alejandro Brito",
+    "url": "https://github.com/AleBrito124356"
+  },
+  "homepage": "https://github.com/AleBrito124356/astra-blender-harness",
+  "repository": "https://github.com/AleBrito124356/astra-blender-harness",
+  "license": "MIT",
+  "keywords": ["blender", "3d", "mcp", "bpy", "agents", "guardrails", "headless", "scene-generation"],
+  "mcpServers": {
+    "astra-blender": {
+      "command": "uvx",
+      "args": ["--from", "${CLAUDE_PLUGIN_ROOT}", "astra-blender", "mcp"]
+    }
+  }
+}

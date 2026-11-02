@@ -1,7 +1,8 @@
 {
-  "transport": "stdio",
-  "command": "uvx",
-  "args": ["blender-mcp==1.9.1"],
-  "env": {"BLENDER_MCP_SAFE_MODE": "1", "BLENDER_MCP_DISABLE_TELEMETRY": "1"},
+  "transport": "socket",
+  "host": "127.0.0.1",
+  "port": 9876,
+  "guard": true,
+  "command_timeout": 180,
   "allowed_tools": ["get_scene_info", "get_object_info", "get_viewport_screenshot", "execute_blender_code"]
 }

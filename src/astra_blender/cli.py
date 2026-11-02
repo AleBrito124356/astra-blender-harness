@@ -25,17 +25,58 @@ def fallback_transport(config):
     for name in ("blender-mcp.exe", "blender-mcp"):
         candidate = scripts / name
         if candidate.is_file():
-            print(f"uvx is not installed; using {candidate} instead")
+            # stderr: in `astra-blender mcp` stdout carries the protocol.
+            print(f"uvx is not installed; using {candidate} instead", file=sys.stderr)
             return config.model_copy(update={"command": str(candidate), "args": []})
     return config
 
 
+def connection_settings(args):
+    """The Blender connection: config file first, then the command-line overrides."""
+    config = (
+        MCPConfig.model_validate_json(args.config.read_text(encoding="utf-8")) if args.config else MCPConfig()
+    )
+    updates = {}
+    backend = args.backend or os.environ.get("ASTRA_BACKEND")
+    if not backend and not args.config and args.command == "mcp":
+        # An agent cannot press buttons: use the Blender on screen when its
+        # add-on is listening, otherwise start a headless one.
+        backend = "auto"
+    if backend:
+        updates["transport"] = backend
+    if args.blender:
+        updates["blender"] = args.blender
+        if "transport" not in updates:
+            updates["transport"] = "headless"
+    if args.file:
+        updates["blend_file"] = str(Path(args.file).resolve())
+        if "transport" not in updates:
+            updates["transport"] = "headless"
+    if args.port_blender:
+        updates["port"] = args.port_blender
+    if args.no_guard:
+        updates["guard"] = False
+    if updates:
+        config = MCPConfig.model_validate({**config.model_dump(), **updates})
+    return fallback_transport(config)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Astra — a local Blender MCP studio")
+    parser = argparse.ArgumentParser(
+        description="Astra - guarded Blender for AI models and agents (studio, CLI and MCP server)"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     serve = sub.add_parser("serve", help="Open the local studio")
     serve.add_argument("--port", type=int, default=8765)
-    doctor = sub.add_parser("doctor", help="Check the actual Blender MCP connection")
+    mcp = sub.add_parser(
+        "mcp",
+        help="Run as an MCP server (stdio) for Claude Code, Codex, Cursor or any MCP client",
+    )
+    mcp.add_argument(
+        "--viewer-port", type=int, default=8765, help="Live 3D viewer port (falls back to a free one)"
+    )
+    mcp.add_argument("--no-viewer", action="store_true", help="Do not start the live 3D viewer")
+    doctor = sub.add_parser("doctor", help="Check the actual Blender connection")
     run = sub.add_parser("run", help="Create a scene from the terminal")
     run.add_argument("prompt")
     run.add_argument("--model", default="openai/gpt-6-astra")
@@ -61,14 +102,36 @@ def main():
     run.add_argument("--animation", choices=["auto", "on", "off"], default="auto")
     run.add_argument("--frames", type=int, default=120)
     run.add_argument("--fps", type=int, default=24)
-    for command in (serve, doctor, run):
-        command.add_argument("--config", type=Path)
+    for command in (serve, mcp, doctor, run):
+        command.add_argument("--config", type=Path, help="Connection settings JSON (see mcp.example.json)")
         command.add_argument("--output", type=Path, default=Path("runs"))
+        command.add_argument(
+            "--backend",
+            choices=["socket", "headless", "auto", "stdio", "http"],
+            help="socket: the Blender MCP add-on in a running Blender (default; `mcp` defaults to auto); "
+            "headless: a background Blender Astra starts; auto: socket if listening, else headless; "
+            "stdio/http: an MCP server such as upstream Blender MCP. Env: ASTRA_BACKEND",
+        )
+        command.add_argument(
+            "--blender",
+            help="Headless: a Blender executable, or a Python that can `import bpy` (implies --backend headless)",
+        )
+        command.add_argument("--file", help="Headless: open this .blend instead of the factory scene")
+        command.add_argument("--port-blender", type=int, help="Socket: the add-on's port (default 9876)")
+        command.add_argument(
+            "--no-guard",
+            action="store_true",
+            help="Disable Astra Guard's static checks on model-written Python",
+        )
     args = parser.parse_args()
-    config = fallback_transport(
-        MCPConfig.model_validate_json(args.config.read_text(encoding="utf-8")) if args.config else MCPConfig()
-    )
-    if args.command == "serve":
+    config = connection_settings(args)
+    if args.command == "mcp":
+        from .mcp_server import serve_stdio
+
+        asyncio.run(
+            serve_stdio(config, args.output, viewer_port=None if args.no_viewer else args.viewer_port)
+        )
+    elif args.command == "serve":
         import uvicorn
 
         from .server import create_app
@@ -98,7 +161,23 @@ def main():
 
 
 async def _doctor(config):
-    async with asyncio.timeout(30):
+    from .backends import resolve_auto
+
+    if config.transport == "auto":
+        config = await resolve_auto(config)
+        print("auto: chose " + config.transport)
+    print(
+        f"Backend: {config.transport}"
+        + (f" ({config.host}:{config.port})" if config.transport == "socket" else "")
+    )
+    if config.transport == "headless":
+        from .backends import find_blender
+
+        path, kind, source = find_blender(config.blender)
+        print(
+            f"Blender: {path} ({'Python with bpy' if kind == 'python' else 'Blender executable'}, from {source})"
+        )
+    async with asyncio.timeout(max(60, config.startup_timeout + 30)):
         async with connect(config) as client:
             found = await discover(client, config.allowed_tools)
             arguments = (
@@ -108,8 +187,11 @@ async def _doctor(config):
             )
             scene = await client.call_tool("get_scene_info", arguments)
             if result_parts(scene)[0].startswith("TOOL ERROR:"):
-                raise RuntimeError("MCP is up but Blender returned an error")
-            print("Blender connected. Tools: " + ", ".join(found))
+                raise RuntimeError("Blender is reachable but returned an error")
+            info = getattr(client, "info", {}) or {}
+            version = info.get("blender_version")
+            print("Blender connected" + (f" ({version})" if version else "") + ". Tools: " + ", ".join(found))
+            print("Astra Guard: " + ("on" if config.guard else "OFF"))
 
 
 async def _run(settings, config, output, reference_paths=()):

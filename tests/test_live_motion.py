@@ -1,24 +1,17 @@
 """Opt-in assembly animation test. Creates uniquely named objects; never deletes a scene."""
 
 import json
-import os
 import uuid
-from pathlib import Path
 
-import pytest
 from PIL import Image
 
-from astra_blender.config import MCPConfig, RunConfig
+from astra_blender.config import RunConfig
 from astra_blender.engine import Run, execute
 from astra_blender.live import BlenderHub, LiveScene
 from astra_blender.references import attach
 
-pytestmark = pytest.mark.skipif(
-    not os.environ.get("ASTRA_LIVE_MCP_CONFIG"), reason="Requires disposable Blender"
-)
 
-
-async def test_reference_assembly_animation_and_motion_framing(tmp_path):
+async def test_reference_assembly_animation_and_motion_framing(tmp_path, blender_config):
     prefix = "ASTRA_TEST_" + uuid.uuid4().hex[:8]
     body, glass, ground, root = [prefix + n for n in ("Body", "Glass", "Ground", "Root")]
     setup = (
@@ -73,7 +66,7 @@ async def test_reference_assembly_animation_and_motion_framing(tmp_path):
                 "total_tokens": 0
             }
 
-    config = MCPConfig.model_validate_json(Path(os.environ["ASTRA_LIVE_MCP_CONFIG"]).read_text())
+    config = blender_config
     hub = BlenderHub(config)
     live = LiveScene(hub)
     photo = tmp_path / "reference.png"

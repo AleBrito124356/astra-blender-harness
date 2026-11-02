@@ -20,8 +20,31 @@ def validate_api_base(value):
 
 
 class MCPConfig(BaseModel):
+    """How Astra reaches Blender. The name predates the non-MCP backends.
+
+    - ``socket`` (default): the Blender MCP add-on's socket in a running Blender.
+    - ``headless``: a background Blender Astra starts and owns (bpy wheel or Blender binary).
+    - ``stdio`` / ``http``: an MCP server such as upstream Blender MCP 1.x or 2.x.
+    - ``auto``: the socket when a Blender with the add-on is listening, otherwise
+      headless when a Blender or bpy is installed. Decided at each connection.
+    """
+
     model_config = ConfigDict(extra="forbid")
-    transport: Literal["stdio", "http"] = "stdio"
+    transport: Literal["socket", "headless", "stdio", "http", "auto"] = "socket"
+    # socket
+    host: str = "127.0.0.1"
+    port: int = Field(default=9876, ge=1, le=65535)
+    # headless: a Blender executable, or a Python interpreter that can `import bpy`.
+    blender: str | None = None
+    blend_file: str | None = None
+    preview_engine: Literal["auto", "workbench", "eevee", "cycles"] = "auto"
+    startup_timeout: int = Field(default=120, ge=10, le=900)
+    # socket and headless: how long one Blender command may take.
+    command_timeout: int = Field(default=180, ge=5, le=3600)
+    # Astra Guard: static checks on model-written Python before it reaches
+    # Blender (socket and headless). Upstream's own safe mode covers stdio.
+    guard: bool = True
+    # stdio / http
     command: str = "uvx"
     args: list[str] = Field(default_factory=lambda: ["blender-mcp==1.9.1"])
     env: dict[str, str] = Field(

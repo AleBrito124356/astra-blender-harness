@@ -1,22 +1,17 @@
 """Opt-in integration: modifies only a disposable Blender session selected by env."""
 
 import json
-import os
 import uuid
-from pathlib import Path
 
 import pytest
 
-from astra_blender.config import MCPConfig, RunConfig
+from astra_blender.config import RunConfig
 from astra_blender.engine import Run, execute
 from astra_blender.live import BlenderHub, LiveScene
 
 
-@pytest.mark.skipif(
-    not os.environ.get("ASTRA_LIVE_MCP_CONFIG"), reason="Requires a disposable live Blender MCP session"
-)
 @pytest.mark.parametrize("vision", [False, True])
-async def test_live_blender_scene_copy_and_viewport(tmp_path, vision):
+async def test_live_blender_scene_copy_and_viewport(tmp_path, vision, blender_config):
     name = "ASTRA_LIVE_TEST_" + uuid.uuid4().hex[:8]
 
     class Scripted:
@@ -51,9 +46,7 @@ async def test_live_blender_scene_copy_and_viewport(tmp_path, vision):
                 "total_tokens": 0
             }
 
-    config = MCPConfig.model_validate_json(
-        Path(os.environ["ASTRA_LIVE_MCP_CONFIG"]).read_text(encoding="utf-8")
-    )
+    config = blender_config
     hub, live = BlenderHub(config), None
     try:
         live = LiveScene(hub)

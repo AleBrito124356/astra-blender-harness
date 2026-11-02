@@ -246,7 +246,7 @@ async function imageFile(filename){
 function addEvent(event){
   if(['usage','image','decision','deadline'].includes(event.type))return;
   const item=document.createElement('div');item.className='event';item.dataset.kind=event.type;
-  if(['failed','budget_exhausted','incomplete','denied'].includes(event.type)||event.is_error)item.classList.add('error');
+  if(['failed','budget_exhausted','incomplete','denied','guard'].includes(event.type)||event.is_error)item.classList.add('error');
   const tag=document.createElement('span');tag.className='event-tag';tag.textContent=event.type.replaceAll('_',' ')+(event.tool?' / '+event.tool:'');item.append(tag);
   const text=document.createElement('p');text.textContent=event.text||event.message||event.phase||(event.tools?event.tools.join(' · '):'');if(event.type==='tool_result'){const details=document.createElement('details');const summary=document.createElement('summary');summary.textContent=event.is_error?'Tool error — inspect details':'Result — inspect details';details.open=!!event.is_error;details.append(summary,text);item.append(details);}else item.append(text);
   if(event.arguments){const detail=document.createElement('details');const summary=document.createElement('summary');summary.textContent=event.type==='approval'?'Review proposed Blender operation':'Tool arguments';const code=document.createElement('pre');code.textContent=JSON.stringify(event.arguments,null,2);detail.append(summary,code);detail.open=event.type==='approval';item.append(detail);}
@@ -338,7 +338,7 @@ $('profile-delete').onclick=deleteProfile;
 $('expand').onclick=()=>{const on=document.body.classList.toggle('expanded');$('expand').textContent=on?'⤡':'⤢';$('expand').title=on?'Restore the viewport':'Expand the viewport';};
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&document.body.classList.contains('expanded'))$('expand').click();});
 document.querySelectorAll('[data-preset]').forEach(button=>button.onclick=()=>{$('prompt').value=presets[button.dataset.preset];$('prompt').focus();});
-$('connect').onclick=async()=>{$('connect').disabled=true;notice('Checking MCP and the Blender scene…');try{const data=await json('/doctor',{});$('connect').textContent='● Blender connected';notice('Connected. Available tools: '+data.tools.join(', '));}catch(error){$('connect').textContent='○ Check Blender';notice(error.message);}finally{$('connect').disabled=false;}};
+$('connect').onclick=async()=>{$('connect').disabled=true;notice('Checking the Blender connection…');try{const data=await json('/doctor',{});$('connect').textContent='● Blender connected';notice('Connected'+(data.blender?' to Blender '+data.blender:'')+(data.backend?' ('+data.backend+')':'')+'. Available tools: '+data.tools.join(', '));}catch(error){$('connect').textContent='○ Check Blender';notice(error.message);}finally{$('connect').disabled=false;}};
 $('stop').onclick=async()=>{if(runId){try{await json('/runs/'+runId+'/cancel',{});notice('Stop requested. An in-flight Blender operation may still finish.');}catch(error){notice(error.message);}}};
 window.addEventListener('beforeunload',event=>{if(polling){event.preventDefault();event.returnValue='A Blender run is active.';}});
 (async()=>{

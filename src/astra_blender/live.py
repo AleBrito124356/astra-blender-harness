@@ -6,6 +6,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 
+from .backends import BlenderUnavailable
 from .bridge import connect
 from .spatial import bake_code, diagnostics, known_hashes, merge_unchanged, parse_probe, probe_code
 
@@ -19,6 +20,9 @@ class BlenderHub:
         self.operation = None
         self.connected = False
         self.closing = False
+        # What the current connection turned out to be (auto resolves per connection).
+        self.backend = None
+        self.info = {}
 
     @asynccontextmanager
     async def connection(self, config=None):
@@ -46,6 +50,8 @@ class BlenderHub:
         try:
             async with self.connector(self.config) as session:
                 self.connected = True
+                self.backend = getattr(session, "label", None) or getattr(self.config, "transport", None)
+                self.info = dict(getattr(session, "info", None) or {})
                 while True:
                     current, method, args, kwargs = await self.queue.get()
                     if current.cancelled():
@@ -56,8 +62,14 @@ class BlenderHub:
                         current.set_result(result)
                     current = None
                     self.operation = None
-        except (Exception, asyncio.CancelledError, BaseExceptionGroup):
-            error = RuntimeError("Blender MCP disconnected. Inspect Blender before retrying a mutation.")
+        except (Exception, asyncio.CancelledError, BaseExceptionGroup) as failure:
+            error = RuntimeError("Blender disconnected. Inspect Blender before retrying a mutation.")
+            cause = failure
+            while isinstance(cause, BaseExceptionGroup) and cause.exceptions:
+                cause = cause.exceptions[0]
+            if isinstance(cause, BlenderUnavailable):
+                # Never connected: say what to start or install instead.
+                error = BlenderUnavailable(str(cause))
             if current and not current.done():
                 current.set_exception(error)
             while not self.queue.empty():
