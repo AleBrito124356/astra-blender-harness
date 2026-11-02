@@ -137,6 +137,8 @@ class Run:
         # Astra Guard on model-written Python; execute() takes it from the
         # Blender connection settings.
         self.guard = True
+        # Set by execute() for Blender processes Astra owns (headless).
+        self.blender_session = None
         self.waited_for_approval = 0.0
         # The live conversation and phase, so execute() can persist a run
         # that stopped early without reaching back into the loop.
@@ -179,6 +181,10 @@ class Run:
         Blender, so a resumed run re-inspects rather than trusting this copy."""
         state = {
             "schema_version": 1,
+            "id": self.id,
+            # Which Blender process held the scene. A headless Blender dies
+            # with Astra; a resumed run started in a new one reopens the copy.
+            "blender_session": self.blender_session,
             "stage": stage,
             "steps": self.steps,
             "total_tokens": self.total_tokens,
@@ -265,6 +271,35 @@ def first_cause(error):
     return leaves[0] if leaves else error
 
 
+SCENE_COPIES = ("stopped.blend", "scene.blend", "refine.blend", "build.blend", "checkpoint.blend")
+RUN_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+async def rescue_scene(run, session):
+    """Keep a copy of a headless scene when the run stops early.
+
+    A headless Blender ends with Astra, so continuing such a run later needs a
+    file to reopen. Best effort, bounded, and never the reason a run fails.
+    """
+    path = (run.directory / "stopped.blend").as_posix()
+    code = "import bpy\nbpy.ops.wm.save_as_mainfile(filepath=" + repr(path) + ", copy=True)\nprint('Saved')"
+    try:
+        async with asyncio.timeout(30):
+            result = await session.call_tool("execute_blender_code", {"code": code})
+        if (
+            not result_parts(result)[0].startswith("TOOL ERROR")
+            and (run.directory / "stopped.blend").is_file()
+        ):
+            run.emit("artifact", file="stopped.blend", message="Scene copy kept so this run can be continued")
+    except Exception:
+        pass
+
+
+def latest_scene(directory):
+    found = [directory / name for name in SCENE_COPIES if (directory / name).is_file()]
+    return max(found, key=lambda path: path.stat().st_mtime) if found else None
+
+
 def result_parts(result):
     texts, images = [], []
     for block in result.content:
@@ -296,8 +331,14 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
             run.deadline = deadline
             async with connector(mcp_config) as session:
                 tools = await discover(session, mcp_config.allowed_tools)
+                run.blender_session = (getattr(session, "info", None) or {}).get("session_id")
                 run.emit("connected", tools=list(tools))
-                await _loop(run, session, tools, provider, state)
+                try:
+                    await _loop(run, session, tools, provider, state)
+                except Exception as stop:
+                    if run.blender_session and not isinstance(first_cause(stop), AnimationIncomplete):
+                        await rescue_scene(run, session)
+                    raise
         run.status = "completed"
         run.emit("completed", message="Quality loop finished. Inspect the scene before production use.")
     except (Exception, asyncio.CancelledError, BaseExceptionGroup) as error:
@@ -536,6 +577,25 @@ async def _loop(run, session, tools, provider, state=None):
             raise RuntimeError("Reported scene save is missing from the shared output directory")
         run.emit("artifact", file=filename, message="Scene copy verified on disk")
 
+    if state and run.blender_session and state.get("blender_session") != run.blender_session:
+        # This Blender never saw the earlier run's scene: reopen its newest copy.
+        previous = str(state.get("id") or "")
+        source = latest_scene(run.directory.parent / previous) if RUN_ID.match(previous) else None
+        if source is None:
+            run.emit(
+                "restored",
+                message="The run being continued left no scene copy; continuing from the open scene.",
+            )
+        else:
+            code = (
+                "import bpy\nbpy.ops.wm.open_mainfile(filepath="
+                + repr(source.as_posix())
+                + ", load_ui=False, use_scripts=False)\nprint(len(bpy.context.scene.objects))"
+            )
+            text, _ = await call("execute_blender_code", {"code": code}, internal=True)
+            run.emit(
+                "restored", file=source.name, message=f"Reopened {source.name} from the run being continued"
+            )
     await evidence()
     await save("checkpoint.blend")
     stages = STAGES if run.config.quality != "draft" else [s for s in STAGES if s[0] != "refine"]

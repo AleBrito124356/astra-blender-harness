@@ -420,7 +420,9 @@ class HeadlessSession(AddonSession):
         self.info = {"blender_version": " ".join(version), "executable": path, "kind": kind, "source": source}
         self.drain_task = asyncio.create_task(self._drain())
         await self.open()
-        self.info.update({"executable": path, "kind": kind, "source": source})
+        self.info.update(
+            {"executable": path, "kind": kind, "source": source, "session_id": secrets.token_hex(8)}
+        )
         return self
 
     async def _wait_ready(self):

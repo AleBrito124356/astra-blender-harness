@@ -80,3 +80,58 @@ async def test_live_blender_scene_copy_and_viewport(tmp_path, vision, blender_co
         if live:
             await live.close()
         await hub.close()
+
+
+async def test_continuing_a_headless_run_reopens_its_scene_in_a_new_blender(tmp_path, blender_config):
+    """A headless Blender ends with its run. Continuing later, in a new Blender
+    process, must start from the scene the first run built - not a factory cube."""
+    if blender_config.transport != "headless":
+        pytest.skip("headless-specific")
+    from astra_blender.bridge import connect
+
+    name = "ASTRA_RESUME_" + uuid.uuid4().hex[:8]
+
+    class BuildThenFail:
+        turn = 0
+
+        async def complete(self, messages, tools):
+            self.turn += 1
+            if self.turn == 2:
+                code = f"import bpy\nbpy.ops.mesh.primitive_torus_add()\nbpy.context.object.name = {name!r}"
+                return {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "build",
+                            "type": "function",
+                            "function": {
+                                "name": "execute_blender_code",
+                                "arguments": json.dumps({"code": code}),
+                            },
+                        }
+                    ],
+                }, {"total_tokens": 0}
+            if self.turn == 3:
+                raise RuntimeError("provider went away mid-build")
+            return {"role": "assistant", "content": "Plan: one torus."}, {"total_tokens": 0}
+
+    settings = dict(
+        prompt="Build a torus, then continue.", model="test/scripted", auto_approve=True, quality="draft"
+    )
+    first = Run(RunConfig(**settings), tmp_path)
+    await execute(first, blender_config, provider=BuildThenFail(), connector=connect)
+    assert first.status == "failed"
+    assert (first.directory / "stopped.blend").is_file(), [e["type"] for e in first.events]
+    state = json.loads((first.directory / "state.json").read_text())
+
+    class Inspect:
+        async def complete(self, messages, tools):
+            return {"role": "assistant", "content": "Continued."}, {"total_tokens": 0}
+
+    second = Run(RunConfig(**settings, resume_from=first.id), tmp_path)
+    await execute(second, blender_config, provider=Inspect(), connector=connect, state=state)
+    assert second.status == "completed", second.events[-1]
+    restored = [e for e in second.events if e["type"] == "restored"]
+    assert restored and restored[0]["file"] == "stopped.blend"
+    quality = json.loads((second.directory / "quality.json").read_text())
+    assert name in [o["name"] for o in quality["objects"]]
