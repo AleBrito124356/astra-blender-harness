@@ -232,3 +232,29 @@ async def test_headless_worker_exits_when_astra_disappears(blender_config):
         await asyncio.wait_for(session.process.wait(), 15)
     finally:
         await session.close()
+
+
+async def test_bytes_after_a_reply_are_kept_for_the_next_one():
+    """Two replies in one write: the second must not be dropped."""
+
+    async def handle(reader, writer):
+        await reader.read(65536)
+        first = {"status": "success", "result": {"executed": True, "result": "one\n"}}
+        second = {"status": "success", "result": {"executed": True, "result": "two\n"}}
+        writer.write((json.dumps(first) + json.dumps(second)).encode())
+        await writer.drain()
+        await reader.read(65536)
+        await asyncio.sleep(0.5)
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    session = AddonSession("127.0.0.1", port)
+    session.reader, session.writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        assert (await session.command("execute_code", {"code": "1"}))["result"] == "one\n"
+        assert (await session.command("execute_code", {"code": "2"}))["result"] == "two\n"
+    finally:
+        session.writer.close()
+        server.close()
+        await server.wait_closed()

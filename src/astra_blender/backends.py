@@ -103,6 +103,7 @@ class AddonSession:
         self.label = label
         self.reader = None
         self.writer = None
+        self.pending = bytearray()
         self.lock = asyncio.Lock()
         self.info = {}
         self.shots = None
@@ -134,6 +135,7 @@ class AddonSession:
         self.reader, self.writer = await asyncio.wait_for(
             asyncio.open_connection(self.host, self.port, limit=READ_CHUNK * 4), timeout=10
         )
+        self.pending = bytearray()
 
     async def close(self):
         if self.writer is not None:
@@ -182,34 +184,42 @@ class AddonSession:
         """Read until the bytes form one JSON object.
 
         The protocol has no length prefix: a reply is complete when it parses.
-        A geometry snapshot runs to megabytes, so parsing is attempted only
-        when the data ends with a closing brace and the braces balance, or the
-        stream has paused - not after every chunk.
+        A geometry snapshot runs to megabytes, so brace counts are kept
+        incrementally per chunk and a parse is attempted only when the data
+        ends with a closing brace and the counts balance, or the stream has
+        paused (braces inside strings can leave the counts uneven). Bytes after
+        the object are kept for the next read instead of being dropped.
         """
-        data = bytearray()
+        data, self.pending = self.pending, bytearray()
+        opened, closed = data.count(b"{"), data.count(b"}")
         decoder = json.JSONDecoder()
         while True:
+            if data and data.rstrip().endswith(b"}") and opened == closed:
+                parsed = self._parse(decoder, data)
+                if parsed is not None:
+                    return parsed
             try:
                 chunk = await asyncio.wait_for(self.reader.read(READ_CHUNK), timeout=0.25)
-                paused = False
             except TimeoutError:
-                chunk, paused = b"", True
-                if not data:
-                    continue
-            if not chunk and not paused:
+                if data and data.rstrip().endswith(b"}"):
+                    parsed = self._parse(decoder, data)
+                    if parsed is not None:
+                        return parsed
+                continue
+            if not chunk:
                 raise ConnectionError("Blender closed the connection")
             data.extend(chunk)
-            tail = data.rstrip()
-            if not tail.endswith(b"}"):
-                continue
-            if not paused and data.count(b"{") != data.count(b"}"):
-                continue
-            try:
-                text = bytes(data).decode("utf-8")
-                value, end = decoder.raw_decode(text.lstrip())
-            except (UnicodeDecodeError, ValueError):
-                continue
-            return value
+            opened += chunk.count(b"{")
+            closed += chunk.count(b"}")
+
+    def _parse(self, decoder, data):
+        try:
+            text = bytes(data).decode("utf-8").lstrip()
+            value, end = decoder.raw_decode(text)
+        except (UnicodeDecodeError, ValueError):
+            return None
+        self.pending = bytearray(text[end:].encode("utf-8").lstrip())
+        return value
 
     async def list_tools(self, cursor=None):
         return SimpleNamespace(tools=addon_tools(), nextCursor=None)

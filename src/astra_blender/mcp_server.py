@@ -118,7 +118,7 @@ def tool_definitions(quality_available):
         Tool(
             name="run_python",
             title="Run Python in Blender",
-            description="Run a Python script inside Blender (bpy, bmesh, mathutils, math, random, json, numpy "
+            description="Run a Python script inside Blender (bpy, bmesh, mathutils, math, random, json, array "
             "and plain-Python modules). Returns what it printed, then an audit of the scene after the edit: "
             "problems it introduced and problems it fixed. Work in small steps. Astra Guard refuses "
             "scripts that import os/sys/subprocess, use eval/exec/open, touch interpreter internals, "

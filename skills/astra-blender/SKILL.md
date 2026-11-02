@@ -45,7 +45,9 @@ models most often get wrong. Its numbers are evidence; your job is the taste.
 ## Rules that save time
 
 - Guard refusals name the line and the reason. Rewrite with `bpy`, `bmesh`,
-  `mathutils`, `math`, `random`, `json`, `numpy` and plain Python. No `os`,
+  `mathutils`, `math`, `random`, `json`, `array` and plain Python (no `numpy`:
+  use `array.array` with `foreach_get`/`foreach_set`). Use `bpy.ops.<group>.<op>()`
+  directly; do not pass `bpy.ops` namespaces around. No `os`,
   `sys`, `subprocess`, `open`, `eval`/`exec`, dunder attributes, handlers,
   timers, `register_class` or file open/save operators.
 - Query the API when unsure (`print(dir(...))`, `bpy.app.version`) instead of

@@ -28,17 +28,30 @@ for attr in ("location", "scale"):
     print(attr, getattr(bpy.data.objects["Body"], attr))
 setattr(bpy.data.objects["Body"], "hide_render", False)
 """,
-    "bmesh_numpy": """
+    "bmesh_arrays": """
 import bpy, bmesh
-import numpy as np
+from array import array
 mesh = bpy.data.meshes.new("Grid")
 bm = bmesh.new()
 bmesh.ops.create_grid(bm, x_segments=4, y_segments=4, size=1)
 bm.to_mesh(mesh)
 bm.free()
-coords = np.zeros(len(mesh.vertices) * 3)
+coords = array("f", [0.0]) * (len(mesh.vertices) * 3)
 mesh.vertices.foreach_get("co", coords)
-print(type(coords).__name__, coords.reshape(-1, 3).mean(axis=0))
+print(type(coords).__name__, "{:.2f} {:,.1f}".format(sum(coords), 1234.5))
+""",
+    "operator_aliases": """
+import bpy
+ops = bpy.ops
+mesh_ops = bpy.ops.mesh
+mesh_ops.primitive_cylinder_add(vertices=48, radius=0.4, depth=1.2)
+ops.object.shade_smooth()
+if hasattr(bpy.ops.mesh, "primitive_torus_add"):
+    getattr(bpy.ops.mesh, "primitive_torus_add")(location=(0, 0, 2))
+bpy.ops.object.mode_set(mode="OBJECT")
+C = bpy.context
+C.view_layer.update()
+print(isinstance(C.object, bpy.types.Object))
 """,
     "render_and_settings": """
 import bpy
@@ -85,6 +98,7 @@ REJECTED = {
     "getattr_dunder_literal": ("getattr(print, '__globals__')", "__globals__"),
     "getattr_as_value": ("import functools\nfunctools.reduce(getattr, ['a'], object)", "called directly"),
     "format_escape": ("'{0.__class__}'.format(1)", "format fields"),
+    "nested_format_escape": ("'{0:{1.__class__}}'.format(1, 2)", "format fields"),
     "computed_format": ("s = '{0.' + 'x}'\ns.format(1)", "string literal"),
     "handlers": (
         "import bpy\nbpy.app.handlers.frame_change_post.append(lambda s: None)",
@@ -111,14 +125,70 @@ REJECTED = {
     ),
     "frame_walk": ("try:\n    1/0\nexcept Exception as e:\n    e.__traceback__", "__traceback__"),
     "tb_frame": ("import sys", "import of 'sys'"),
-    "numpy_load": ("import numpy as np\nnp.load('/tmp/x.npy', allow_pickle=True)", "numpy.load"),
-    "numpy_tofile": ("import numpy as np\nnp.zeros(3).tofile('/tmp/x')", "tofile"),
+    "numpy": ("import numpy as np\nnp.load('/tmp/x.npy', allow_pickle=True)", "import of 'numpy'"),
+    "tofile": ("x = bpy_array()\nx.tofile('/tmp/x')", "tofile"),
+    "typing_eval": ("import typing\ntyping.get_type_hints(f)", "import of 'typing'"),
+    "singledispatch": ("import functools\n@functools.singledispatch\ndef f(x): pass", "singledispatch"),
+    "string_formatter": (
+        "import string\nstring.Formatter().vformat('{0.x}', (1,), {})",
+        "import of 'string'",
+    ),
+    # Receivers the guard cannot resolve must not hide a refused operator.
+    "walrus_wm": ("import bpy\n(w := bpy.ops.wm).save_mainfile()", "save_mainfile"),
+    "walrus_ops_append": ("import bpy\n(w := bpy.ops.wm).append(filepath='/x.blend')", "bpy.ops.wm"),
+    "subscript_wm": ("import bpy\n[bpy.ops.wm][0].append(filepath='/x.blend')", "bpy.ops.wm"),
+    "lambda_ops": (
+        "import bpy\n(lambda: bpy.ops)().script.python_file_run(filepath='/x.py')",
+        "python_file_run",
+    ),
+    "lambda_group": ("import bpy\n(lambda: bpy.ops)().wm.link(filepath='/x.blend')", "bpy.ops"),
+    "walrus_prefs": ("import bpy\n(o := bpy.ops).preferences.addon_enable(module='x')", "addon_enable"),
+    "loop_getattr_ops": (
+        "import bpy\nfor g in ('preferences',):\n    getattr(bpy.ops, g).addon_install(filepath='x')",
+        "addon_install",
+    ),
+    "loop_getattr_wm": (
+        "import bpy\nfor o in ('append',):\n    getattr(bpy.ops.wm, o)(filepath='/x')",
+        "bpy.ops.wm.append",
+    ),
+    "loop_getattr_namespace": (
+        "import bpy\nfor g in ('wm',):\n    getattr(bpy.ops, g)",
+        "bpy.ops may only be used directly",
+    ),
+    "argument": (
+        "import bpy\ndef f(m):\n    m.append(filepath='/x')\nf(bpy.ops.wm)",
+        "bpy.ops.wm may only be used directly",
+    ),
+    "container": (
+        "import bpy\nd = {'a': bpy.ops.wm}\nd['a'].append(filepath='/x')",
+        "bpy.ops.wm may only be used directly",
+    ),
+    "default_arg": (
+        "import bpy\ndef f(m=bpy.ops.wm):\n    m.link(filepath='/x')",
+        "bpy.ops.wm may only be used directly",
+    ),
+    "return_value": (
+        "import bpy\ndef f():\n    return bpy.ops.wm\nf().append(filepath='/x')",
+        "bpy.ops.wm may only be used directly",
+    ),
+    "branch_alias": (
+        "import bpy\nif x:\n    w = bpy.ops.wm\nelse:\n    w = bpy.ops.mesh\nw.append(filepath='/x')",
+        "bpy.ops.wm.append",
+    ),
+    "alias_chain": ("import bpy\na = bpy\nb = a.ops\nc = b.wm\nc.link(filepath='/x')", "bpy.ops.wm.link"),
+    "conditional": (
+        "import bpy\n(bpy.ops.wm if x else bpy.ops.mesh).append(filepath='/x')",
+        "may only be used directly",
+    ),
+    "bpy_as_value": ("import bpy\n[bpy][0].ops.wm.append(filepath='/x')", "bpy may only be used directly"),
+    "unresolved_open": ("thing = make()\nthing.open_mainfile(filepath='/x')", "open_mainfile"),
+    "import_handlers": ("import bpy.app.handlers", "import of 'bpy.app.handlers'"),
     "driver_injection": (
         "import bpy\nd = bpy.data.objects['A'].driver_add('location', 0)\n"
         "d.driver.expression = \"__import__('os').getcwd()\"",
         "driver expressions",
     ),
-    "computed_driver": ("x = 'a'\nobj.driver.expression = x", "string literals"),
+    "computed_driver": ("x = 'a'\nobj.driver.expression = x", "string literal"),
     "builtins_name": ("__builtins__['eval']('1')", "__builtins__"),
     "star_import": ("from mathutils import *", "import *"),
     "syntax": ("def broken(:\n    pass", "SyntaxError"),

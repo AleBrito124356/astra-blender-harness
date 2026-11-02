@@ -7,17 +7,30 @@ approves without reading every line. The guard rejects the constructs such
 code needs before a byte reaches Blender:
 
 * imports outside a short allowlist (no ``os``, ``sys``, ``subprocess``,
-  ``socket``, ``importlib``, ``pickle``, ``ctypes`` ...);
+  ``socket``, ``importlib``, ``pickle``, ``ctypes``, ``numpy`` ...);
 * interpreter escapes: ``eval``/``exec``/``compile``/``__import__``/``open``,
   dunder attributes and names, frame and traceback internals, computed
-  ``getattr``/``setattr`` names, ``str.format`` on strings that reach into
-  attributes;
+  ``getattr``/``setattr`` names, ``str.format`` fields that reach into
+  attributes, helpers that evaluate strings as code;
 * code that outlives the call or loads code: ``bpy.app.handlers``/``timers``,
   ``register_class``, text datablocks, linked or appended .blend libraries,
   script/text/preferences/extensions operators, auto-run of embedded scripts;
 * scene-file operators. Astra saves verified copies itself; the model opening,
   reverting or overwriting files would break the checkpoints and could
   overwrite your original ``.blend``.
+
+Three mechanisms keep those rules from being dodged by rewriting a call:
+
+1. Distinctive names (``handlers``, ``save_mainfile``, ``python_file_run`` ...)
+   are refused on any receiver, resolvable or not.
+2. The namespaces that hold dangerous operators - ``bpy``, ``bpy.ops``,
+   ``bpy.ops.<group>``, ``bpy.app``, ``bpy.utils`` - may only be used directly
+   (``bpy.ops.mesh.primitive_cube_add()``) or given a plain alias
+   (``ops = bpy.ops``). Put in a list, returned from a lambda, passed to a
+   function or read with a computed ``getattr`` name, they would hide which
+   operator runs, so those forms are refused.
+3. Aliases are resolved flow-insensitively: a name stands for every path it is
+   ever assigned, so branches and reassignment cannot launder a path.
 
 It is a guard, not a sandbox: Blender's Python is not confined, and code the
 guard accepts runs with your user's permissions. Approvals and a disposable
@@ -27,6 +40,7 @@ pass through it; they never contain model text.
 
 import ast
 import re
+import string
 from dataclasses import dataclass
 
 ALLOWED_MODULES = frozenset(
@@ -44,11 +58,9 @@ ALLOWED_MODULES = frozenset(
         "functools",
         "collections",
         "statistics",
-        "string",
         "re",
         "enum",
         "dataclasses",
-        "typing",
         "decimal",
         "fractions",
         "textwrap",
@@ -57,9 +69,12 @@ ALLOWED_MODULES = frozenset(
         "bisect",
         "array",
         "time",
-        "numpy",
     }
 )
+# Deliberately absent: numpy (file and pickle I/O, native library loading -
+# too large a surface to fence statically), typing (get_type_hints evaluates
+# string annotations), string (Formatter.vformat reaches attributes by name).
+# Blender's foreach_get/foreach_set work with array.array or plain lists.
 
 FORBIDDEN_CALLS = {
     "eval": "eval() runs arbitrary expressions",
@@ -78,10 +93,13 @@ FORBIDDEN_CALLS = {
     "memoryview": "memoryview() exposes raw memory",
 }
 ATTRIBUTE_CALLS = {"getattr", "setattr", "delattr", "hasattr"}
+LITERAL_LOOKUPS = {"getattr", "hasattr"}
 
 ALLOWED_DUNDERS = frozenset({"__name__", "__doc__"})
 
-# Blocked wherever they appear, because the receiver cannot always be resolved
+SCENE_FILES = "Astra saves verified scene copies itself; scripts must not open, save or replace .blend files"
+
+# Refused wherever they appear, because the receiver cannot always be resolved
 # statically: `x = some_call(); x.handlers` must not slip through.
 FORBIDDEN_ATTRIBUTES = {
     "handlers": "bpy.app.handlers persist code beyond this call",
@@ -100,6 +118,35 @@ FORBIDDEN_ATTRIBUTES = {
     "script_directories": "adds a script folder Blender loads code from",
     "script_directory": "adds a script folder Blender loads code from",
     "use_scripts_auto_execute": "enables auto-run of scripts embedded in .blend files",
+    "python_file_run": "runs a Python file",
+    "run_script": "runs a text datablock as a script",
+    "addon_enable": "enables add-ons, which run code",
+    "addon_install": "installs add-ons",
+    "addon_refresh": "rescans add-on code",
+    "package_install": "installs extensions",
+    "package_install_files": "installs extensions",
+    "save_mainfile": SCENE_FILES,
+    "save_as_mainfile": SCENE_FILES,
+    "open_mainfile": SCENE_FILES,
+    "revert_mainfile": SCENE_FILES,
+    "recover_last_session": SCENE_FILES,
+    "recover_auto_save": SCENE_FILES,
+    "read_homefile": SCENE_FILES,
+    "read_factory_settings": SCENE_FILES,
+    "read_factory_userpref": "would reset your preferences",
+    "save_homefile": "overwrites your startup file",
+    "save_userpref": "overwrites your preferences",
+    "lib_relocate": "relocating libraries loads other .blend files",
+    "lib_reload": "reloading libraries loads other .blend files",
+    "url_open": "opens a URL",
+    "path_open": "opens a path with the system handler",
+    "quit_blender": "would close Blender",
+    "play_rendered_anim": "launches an external player",
+    "get_type_hints": "evaluates string annotations as code",
+    "singledispatch": "evaluates string annotations as code",
+    "singledispatchmethod": "evaluates string annotations as code",
+    "ForwardRef": "evaluates strings as code",
+    "vformat": "format fields can reach interpreter internals",
     "tofile": "writes raw arrays to any path",
     "dump": "pickles to a file",
     "tb_frame": "frames expose interpreter internals",
@@ -116,6 +163,7 @@ FORBIDDEN_ATTRIBUTES = {
     "co_code": "code objects are not allowed",
 }
 
+# Paths whose last name is too common to refuse everywhere (`list.append`).
 FORBIDDEN_PATHS = (
     ("bpy.ops.script", "script operators run Python"),
     ("bpy.ops.text", "text operators run text datablocks"),
@@ -124,43 +172,21 @@ FORBIDDEN_PATHS = (
     ("bpy.ops.console", "the console runs arbitrary Python"),
     ("bpy.ops.wm.append", "appending from another .blend can bring its code"),
     ("bpy.ops.wm.link", "linking another .blend can bring its code"),
-    ("bpy.ops.wm.lib_relocate", "relocating libraries loads other .blend files"),
-    ("bpy.ops.wm.lib_reload", "reloading libraries loads other .blend files"),
-    ("bpy.ops.wm.save_mainfile", "Astra saves verified scene copies itself; never overwrite the open file"),
-    ("bpy.ops.wm.save_as_mainfile", "Astra saves verified scene copies itself"),
-    ("bpy.ops.wm.open_mainfile", "opening another file would replace the scene Astra is tracking"),
-    ("bpy.ops.wm.revert_mainfile", "reverting would discard the scene Astra is tracking"),
-    ("bpy.ops.wm.recover_last_session", "recovering would replace the scene Astra is tracking"),
-    ("bpy.ops.wm.recover_auto_save", "recovering would replace the scene Astra is tracking"),
-    ("bpy.ops.wm.read_homefile", "reading the startup file would replace the scene"),
-    ("bpy.ops.wm.read_factory_settings", "factory settings would replace the scene"),
-    ("bpy.ops.wm.save_homefile", "overwrites your startup file"),
-    ("bpy.ops.wm.save_userpref", "overwrites your preferences"),
-    ("bpy.ops.wm.url_open", "opens a URL"),
-    ("bpy.ops.wm.path_open", "opens a path with the system handler"),
-    ("bpy.ops.wm.quit_blender", "would close Blender"),
-    ("bpy.ops.render.play_rendered_anim", "launches an external player"),
-    ("numpy.load", "numpy.load can unpickle files"),
-    ("numpy.save", "writes arbitrary files"),
-    ("numpy.savez", "writes arbitrary files"),
-    ("numpy.savez_compressed", "writes arbitrary files"),
-    ("numpy.savetxt", "writes arbitrary files"),
-    ("numpy.loadtxt", "reads arbitrary files"),
-    ("numpy.genfromtxt", "reads arbitrary files"),
-    ("numpy.fromfile", "reads arbitrary files"),
-    ("numpy.fromregex", "reads arbitrary files"),
-    ("numpy.memmap", "maps arbitrary files"),
-    ("numpy.lib", "numpy.lib contains file and format helpers"),
-    ("numpy.ctypeslib", "loads native libraries"),
-    ("numpy.f2py", "compiles native code"),
-    ("numpy.distutils", "builds native code"),
-    ("numpy.testing", "test helpers spawn processes"),
-    ("numpy.DataSource", "opens files and URLs"),
     ("time.sleep", "sleeping blocks Blender; there is nothing to wait for"),
 )
 
-# A format string that reaches into attributes or items: "{0.__class__}".
-FORMAT_REACH = re.compile(r"\{[^{}]*[.\[]")
+NAMESPACE_USE = (
+    "may only be used directly, as in bpy.ops.mesh.primitive_cube_add(), or given a plain alias "
+    "(ops = bpy.ops). Putting it in a container, returning it, passing it to a function or reading it "
+    "with a computed name hides which operator runs"
+)
+
+
+def sensitive(path):
+    """Namespaces whose members include operators the guard refuses."""
+    if path in {"bpy", "bpy.ops", "bpy.app", "bpy.utils"}:
+        return True
+    return path.startswith("bpy.ops.") and path.count(".") == 2
 
 
 @dataclass(frozen=True)
@@ -184,12 +210,38 @@ def _matches(path, prefix):
     return path == prefix or path.startswith(prefix + ".")
 
 
+def _literal_lookup(node, names=LITERAL_LOOKUPS):
+    """getattr/hasattr(x, "literal") - read like an attribute access."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in names
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    )
+
+
+def _format_fields(text, depth=0):
+    """Field names in a format string, nested specs included: '{0.x:{1[2]}}' -> ['0.x', '1[2]']."""
+    names = []
+    try:
+        parsed = list(string.Formatter().parse(text))
+    except ValueError:
+        return ["<malformed>"]
+    for _, field, spec, _ in parsed:
+        if field is not None:
+            names.append(field)
+        if spec and depth < 3:
+            names.extend(_format_fields(spec, depth + 1))
+    return names
+
+
 class _Checker(ast.NodeVisitor):
-    def __init__(self):
+    def __init__(self, aliases):
         self.violations = []
-        # Local name -> dotted path it stands for: `import numpy as np`,
-        # `from bpy import ops`, `d = bpy.data`.
-        self.aliases = {}
+        # Local name -> every dotted path it is ever bound to.
+        self.aliases = aliases
         # Names that only ever hold string constants, from `for name in ("a", "b")`.
         self.literal_names = {}
 
@@ -199,38 +251,33 @@ class _Checker(ast.NodeVisitor):
     # -- resolution ---------------------------------------------------------
 
     def resolve(self, node):
-        """Dotted path for `a.b.c` rooted at an import or alias, else None."""
-        parts = []
-        while isinstance(node, ast.Attribute):
-            parts.append(node.attr)
-            node = node.value
-        if isinstance(node, ast.Call) and self._literal_getattr(node):
-            inner = self.resolve(node.args[0])
-            if inner is None:
-                return None
-            parts.append(node.args[1].value)
-            return ".".join([inner, *reversed(parts)])
-        if not isinstance(node, ast.Name) or node.id not in self.aliases:
-            return None
-        return ".".join([self.aliases[node.id], *reversed(parts)])
+        return resolve(node, self.aliases)
 
-    def _literal_getattr(self, node):
-        return (
-            isinstance(node.func, ast.Name)
-            and node.func.id == "getattr"
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Constant)
-            and isinstance(node.args[1].value, str)
-        )
-
-    def check_path(self, node, path):
-        if path is None:
-            return False
-        for prefix, reason in FORBIDDEN_PATHS:
-            if _matches(path, prefix):
-                self.fail(node, f"{path} is not allowed: {reason}")
-                return True
+    def check_paths(self, node, paths):
+        for path in sorted(paths):
+            for prefix, reason in FORBIDDEN_PATHS:
+                if _matches(path, prefix):
+                    self.fail(node, f"{path} is not allowed: {reason}")
+                    return True
         return False
+
+    def check_namespace_use(self, node, paths):
+        """A sensitive namespace used as a value instead of as a receiver."""
+        hit = sorted(path for path in paths if sensitive(path))
+        if not hit or isinstance(getattr(node, "ctx", None), (ast.Store, ast.Del)):
+            return
+        parent = getattr(node, "_astra_parent", None)
+        if isinstance(parent, ast.Attribute) and parent.value is node:
+            return
+        if _literal_lookup(parent) and parent.args[0] is node:
+            return
+        if (
+            isinstance(parent, ast.Assign)
+            and parent.value is node
+            and all(isinstance(t, ast.Name) for t in parent.targets)
+        ):
+            return
+        self.fail(node, f"{hit[0]} {NAMESPACE_USE}")
 
     # -- imports --------------------------------------------------------------
 
@@ -240,17 +287,15 @@ class _Checker(ast.NodeVisitor):
             allowed = ", ".join(sorted(ALLOWED_MODULES))
             self.fail(node, f"import of '{module}' is not allowed. Allowed modules: {allowed}")
             return False
-        self.check_path(node, module)
-        return True
+        for part in module.split(".")[1:]:
+            if part in FORBIDDEN_ATTRIBUTES or part.startswith("__"):
+                self.fail(node, f"import of '{module}' is not allowed")
+                return False
+        return not self.check_paths(node, {module})
 
     def visit_Import(self, node):
         for alias in node.names:
-            if self.check_module(node, alias.name):
-                if alias.asname:
-                    self.aliases[alias.asname] = alias.name
-                else:
-                    root = alias.name.split(".")[0]
-                    self.aliases[root] = root
+            self.check_module(node, alias.name)
 
     def visit_ImportFrom(self, node):
         if node.level:
@@ -260,18 +305,15 @@ class _Checker(ast.NodeVisitor):
         if not self.check_module(node, module):
             return
         for alias in node.names:
+            path = f"{module}.{alias.name}"
             if alias.name == "*":
                 self.fail(node, f"'from {module} import *' hides what is imported; name it")
-                continue
-            path = f"{module}.{alias.name}"
-            if alias.name.startswith("__"):
+            elif alias.name.startswith("__"):
                 self.fail(node, f"importing {path} is not allowed")
-                continue
-            if alias.name in FORBIDDEN_ATTRIBUTES:
+            elif alias.name in FORBIDDEN_ATTRIBUTES:
                 self.fail(node, f"importing {path} is not allowed: {FORBIDDEN_ATTRIBUTES[alias.name]}")
-                continue
-            self.check_path(node, path)
-            self.aliases[alias.asname or alias.name] = path
+            else:
+                self.check_paths(node, {path})
 
     # -- names and attributes --------------------------------------------------
 
@@ -284,6 +326,8 @@ class _Checker(ast.NodeVisitor):
             # Passed around as a value (`reduce(getattr, names, obj)`) its
             # attribute name can no longer be checked.
             self.fail(node, f"{node.id} may only be called directly with a literal attribute name")
+        else:
+            self.check_namespace_use(node, self.resolve(node))
 
     def visit_Attribute(self, node):
         attr = node.attr
@@ -291,15 +335,19 @@ class _Checker(ast.NodeVisitor):
             self.fail(node, f"the attribute .{attr} is not allowed (interpreter internals)")
         elif attr in FORBIDDEN_ATTRIBUTES:
             self.fail(node, f".{attr} is not allowed: {FORBIDDEN_ATTRIBUTES[attr]}")
-        elif self.check_path(node, self.resolve(node)):
-            # One message per chain: `bpy.ops.script.reload` is reported once,
-            # not again for `bpy.ops.script`. Whatever the chain hangs off is
-            # still checked.
-            root = node.value
-            while isinstance(root, ast.Attribute):
-                root = root.value
-            self.visit(root)
-            return
+        else:
+            paths = self.resolve(node)
+            if self.check_paths(node, paths):
+                # One message per chain: `bpy.ops.script.reload` is reported
+                # once, not again for `bpy.ops.script`. Whatever the chain
+                # hangs off is still checked.
+                root = node.value
+                while isinstance(root, ast.Attribute):
+                    root = root.value
+                if not isinstance(root, ast.Name):
+                    self.visit(root)
+                return
+            self.check_namespace_use(node, paths)
         self.generic_visit(node)
 
     def visit_Call(self, node):
@@ -308,9 +356,14 @@ class _Checker(ast.NodeVisitor):
             if len(node.args) < 2:
                 self.fail(node, f"{func.id}() needs an object and an attribute name")
             else:
-                self.check_attribute_name(node, func.id, node.args[1])
-                if func.id == "getattr" and self._literal_getattr(node):
-                    self.check_path(node, self.resolve(node))
+                values = self.check_attribute_name(node, func.id, node.args[1])
+                targets = self.resolve(node.args[0])
+                if values and targets:
+                    self.check_paths(node, {f"{t}.{v}" for t in targets for v in values})
+                    if not _literal_lookup(node) and any(sensitive(t) for t in targets):
+                        self.fail(node, f"{min(targets)} {NAMESPACE_USE}")
+                if _literal_lookup(node):
+                    self.check_namespace_use(node, self.resolve(node))
             for arg in node.args:
                 self.visit(arg)
             for keyword in node.keywords:
@@ -318,10 +371,11 @@ class _Checker(ast.NodeVisitor):
             return
         if isinstance(func, ast.Attribute) and func.attr in {"format", "format_map"}:
             receiver = func.value
-            if not isinstance(receiver, ast.Constant):
+            if not (isinstance(receiver, ast.Constant) and isinstance(receiver.value, str)):
                 self.fail(node, "str.format is only allowed on a string literal; use an f-string")
-            elif isinstance(receiver.value, str) and FORMAT_REACH.search(receiver.value):
-                self.fail(node, "format fields may not reach into attributes or items; use an f-string")
+            elif any("." in field for field in _format_fields(receiver.value)):
+                # "{:.2f}" is a format spec and fine; "{0.__class__}" walks attributes.
+                self.fail(node, "format fields may not reach into attributes; use an f-string")
         self.generic_visit(node)
 
     def check_attribute_name(self, node, function, name):
@@ -335,30 +389,29 @@ class _Checker(ast.NodeVisitor):
                 f"{function}() needs a literal attribute name (or a loop variable over a literal "
                 "list of names); computed names can reach interpreter internals",
             )
-            return
+            return []
         for value in values:
             if value.startswith("__") and value not in ALLOWED_DUNDERS:
                 self.fail(node, f"{function}() of {value} is not allowed (interpreter internals)")
             elif value in FORBIDDEN_ATTRIBUTES:
                 self.fail(node, f"{function}() of {value} is not allowed: {FORBIDDEN_ATTRIBUTES[value]}")
+        return values
 
     # -- bindings ---------------------------------------------------------------
 
     def visit_Assign(self, node):
-        path = self.resolve(node.value) if isinstance(node.value, (ast.Attribute, ast.Name)) else None
         for target in node.targets:
-            if isinstance(target, ast.Name):
-                if path is not None:
-                    self.aliases[target.id] = path
-                else:
-                    self.aliases.pop(target.id, None)
             if isinstance(target, ast.Attribute) and target.attr == "expression":
                 self.check_driver_expression(node, node.value)
         self.generic_visit(node)
 
     def check_driver_expression(self, node, value):
         if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
-            self.fail(node, "driver expressions must be string literals")
+            self.fail(
+                node,
+                "set driver expressions with a string literal; use driver variables "
+                "(driver.variables.new()) for values",
+            )
             return
         if re.search(r"__|\bimport\b|\beval\b|\bexec\b|\bopen\b|\bcompile\b", value.value):
             self.fail(node, "driver expressions may only use variables, numbers and math functions")
@@ -398,6 +451,58 @@ class _Checker(ast.NodeVisitor):
                 self.literal_names.pop(element.id, None)
 
 
+def resolve(node, aliases):
+    """Every dotted path an expression can stand for, rooted at an import or alias."""
+    if isinstance(node, ast.Name):
+        return set(aliases.get(node.id, ()))
+    if isinstance(node, ast.Attribute):
+        return {f"{path}.{node.attr}" for path in resolve(node.value, aliases)}
+    if _literal_lookup(node, {"getattr"}):
+        return {f"{path}.{node.args[1].value}" for path in resolve(node.args[0], aliases)}
+    if isinstance(node, ast.NamedExpr):
+        return resolve(node.value, aliases)
+    return set()
+
+
+def collect_aliases(tree):
+    """Name -> every path it is bound to anywhere in the script (flow-insensitive).
+
+    `if c: w = bpy.ops.wm` / `else: w = bpy.ops.mesh` makes `w` both, so
+    `w.save_mainfile()` is judged against both, whichever branch runs.
+    """
+    aliases = {}
+    bindings = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    aliases.setdefault(alias.asname, set()).add(alias.name)
+                else:
+                    root = alias.name.split(".")[0]
+                    aliases.setdefault(root, set()).add(root)
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            for alias in node.names:
+                if alias.name != "*":
+                    aliases.setdefault(alias.asname or alias.name, set()).add(f"{node.module}.{alias.name}")
+        elif isinstance(node, ast.Assign):
+            bindings.extend((t.id, node.value) for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and isinstance(node.target, ast.Name):
+            if node.value is not None:
+                bindings.append((node.target.id, node.value))
+        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            bindings.append((node.target.id, node.value))
+    changed = True
+    while changed:
+        changed = False
+        for name, value in bindings:
+            paths = resolve(value, aliases)
+            known = aliases.setdefault(name, set())
+            if not paths <= known:
+                known |= paths
+                changed = True
+    return aliases
+
+
 def _string_constants(node):
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)) and node.elts:
         if all(isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts):
@@ -411,7 +516,10 @@ def check(code):
         tree = ast.parse(code, mode="exec")
     except SyntaxError as error:
         return [Violation(error.lineno or 0, f"SyntaxError: {error.msg}")]
-    checker = _Checker()
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            child._astra_parent = parent
+    checker = _Checker(collect_aliases(tree))
     checker.visit(tree)
     seen, unique = set(), []
     for violation in sorted(checker.violations, key=lambda v: v.line):

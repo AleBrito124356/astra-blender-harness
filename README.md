@@ -112,10 +112,12 @@ Choose with `--backend`, `--blender PATH`, `--file X.blend`, or a JSON file pass
 
 Model-written code reaches Blender through `run_python` (MCP) or `execute_blender_code` (studio and CLI). Tool output, asset names and reference images flow into the model's context, and a prompt-injected model can be talked into writing hostile code that a person approves without reading every line. Astra Guard parses each script and refuses, naming the line and the reason:
 
-- imports outside an allowlist (`bpy`, `bpy_extras`, `bmesh`, `mathutils`, `math`, `random`, `json`, `numpy`, `collections`, `itertools`, `re` and other plain-Python modules);
+- imports outside an allowlist (`bpy`, `bpy_extras`, `bmesh`, `mathutils`, `math`, `random`, `json`, `collections`, `itertools`, `re`, `array` and other plain-Python modules). `numpy` is not on it - its file, pickle and native-library functions cannot be fenced statically - and neither are `typing` and `string`, which evaluate or format strings into code; `foreach_get`/`foreach_set` work with `array.array`;
 - `eval`, `exec`, `compile`, `__import__`, `open`, `input`, `globals`/`locals`/`vars`, dunder attributes, frame and traceback internals, computed `getattr`/`setattr` names, `str.format` fields that reach into attributes;
 - code that outlives the call or loads code: `bpy.app.handlers`/`timers`, the driver namespace, `register_class`, text datablocks, linked or appended `.blend` libraries, script/text/preferences/extensions operators, enabling auto-run of embedded scripts, scripted driver expressions with imports;
 - scene-file operators (`open_mainfile`, `save_mainfile`, `save_as_mainfile`, revert, factory reset): Astra saves verified copies itself.
+
+The namespaces that hold dangerous operators (`bpy`, `bpy.ops`, `bpy.ops.<group>`, `bpy.app`, `bpy.utils`) may only be used directly or given a plain alias (`ops = bpy.ops`): put in a list, returned from a lambda, passed to a function or read with a computed name they would hide which operator runs. Aliases count every path a name is ever bound to, so branches cannot launder one, and the most dangerous operator names (`save_mainfile`, `python_file_run`, `addon_enable` ...) are refused on any receiver.
 
 Ordinary scene code - primitives, bmesh, modifiers, node materials, drivers, keyframes, imports of models, renders to a path - passes. Astra's own reviewed scripts never go through the guard; they contain no model text. Disable it with `--no-guard` or `"guard": false` if you must.
 

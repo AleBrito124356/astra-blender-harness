@@ -112,10 +112,12 @@ Se elige con `--backend`, `--blender RUTA`, `--file X.blend` o un JSON con `--co
 
 El código del modelo llega a Blender por `run_python` (MCP) o `execute_blender_code` (estudio y CLI). La salida de herramientas, nombres de assets e imágenes de referencia entran en el contexto del modelo, y un modelo con inyección de prompt puede acabar escribiendo código hostil que alguien aprueba sin leer cada línea. Astra Guard analiza cada script y lo rechaza indicando la línea y el motivo cuando contiene:
 
-- imports fuera de una lista permitida (`bpy`, `bpy_extras`, `bmesh`, `mathutils`, `math`, `random`, `json`, `numpy`, `collections`, `itertools`, `re` y otros módulos de Python puro);
+- imports fuera de una lista permitida (`bpy`, `bpy_extras`, `bmesh`, `mathutils`, `math`, `random`, `json`, `collections`, `itertools`, `re`, `array` y otros módulos de Python puro). `numpy` no está - sus funciones de archivos, pickle y librerías nativas no se pueden acotar estáticamente -, ni `typing` y `string`, que evalúan o formatean cadenas como código; `foreach_get`/`foreach_set` funcionan con `array.array`;
 - `eval`, `exec`, `compile`, `__import__`, `open`, `input`, `globals`/`locals`/`vars`, atributos dunder, frames y tracebacks, nombres calculados en `getattr`/`setattr`, campos de `str.format` que acceden a atributos;
 - código que sobrevive a la llamada o carga código: `bpy.app.handlers`/`timers`, el namespace de drivers, `register_class`, bloques de texto, librerías `.blend` enlazadas o anexadas, operadores de scripts/texto/preferencias/extensiones, activar la ejecución automática de scripts incrustados, expresiones de driver con imports;
 - operadores de archivo de escena (`open_mainfile`, `save_mainfile`, `save_as_mainfile`, revertir, ajustes de fábrica): Astra guarda copias verificadas por su cuenta.
+
+Los espacios de nombres con operadores peligrosos (`bpy`, `bpy.ops`, `bpy.ops.<grupo>`, `bpy.app`, `bpy.utils`) solo se pueden usar directamente o con un alias simple (`ops = bpy.ops`): metidos en una lista, devueltos por una lambda, pasados a una función o leídos con un nombre calculado ocultarían qué operador se ejecuta. Los alias cuentan todas las rutas que un nombre recibe en cualquier parte del script, así que las ramas no sirven para disfrazar una, y los nombres de operador más peligrosos (`save_mainfile`, `python_file_run`, `addon_enable`...) se rechazan sobre cualquier receptor.
 
 El código de escena normal - primitivas, bmesh, modificadores, materiales con nodos, drivers, keyframes, importar modelos, renderizar a una ruta - pasa. Los scripts revisados de Astra no pasan por el guard: no contienen texto del modelo. Se desactiva con `--no-guard` o `"guard": false` si hace falta.
 
