@@ -1,5 +1,7 @@
 # Live scene, motion preview and numerical feedback
 
+The viewer works the same with every backend. With a headless Blender it is the only way to watch the scene; with `astra-blender mcp` it opens on http://127.0.0.1:8765 (or a free port, reported by `blender_status`) and shows what the agent builds.
+
 Astra separates the human workspace from model evidence.
 
 - **Humans:** an interactive Three.js view of evaluated Blender meshes, instances, material colors and split normals. Orbit, zoom, fit the scene, select/focus an object, view wireframe, inspect the render camera, and play the animation. Navigation and motion preview happen locally in the browser.
@@ -8,13 +10,13 @@ Astra separates the human workspace from model evidence.
 
 ## Synchronization
 
-A single MCP owner serializes reads and edits through one connection. The browser polls about every 1.8 seconds while visible, unpaused and not previewing motion; snapshots are coalesced and cached for at least 1.5 seconds. Unchanged revisions omit geometry.
+A single connection owner serializes reads and edits through one Blender connection - socket, headless or MCP - shared by the model, the viewer and, in `astra-blender mcp`, the agent. The browser polls about every 1.8 seconds while visible, unpaused and not previewing motion; snapshots are coalesced and cached for at least 1.5 seconds. Unchanged revisions omit geometry.
 
 Reads are incremental. Every visible instance carries a stable key (the object name, then `name#2`, `name#3` for further instances) and each mesh a hash of its evaluated vertex coordinates, counts and material summary. The server sends Blender the hashes it already holds and Blender serializes only meshes whose hash differs, returning a matrix and hash for the rest; the server merges those from the previous snapshot, so everything downstream still sees a complete scene. The viewer keeps any node whose hash is unchanged and updates only its matrix. Curves, text and metaballs have no fast signature and are serialized every time.
 
 Blender runs commands on its main thread. During an edit/render the browser keeps the latest scene and remains navigable; it cannot show intermediate states inside one blocking Python command. Changes appear after Blender processes the next read. This is a live geometry viewer, not an embedded native Blender window or a streamed Cycles viewport.
 
-The viewer reads on opening the page. It executes fixed, reviewed inspection scripts through the configured MCP, never model-written code. It does not send geometry to an LLM by itself. It respects upstream safe mode without extending its allowlist.
+The viewer reads on opening the page. It executes fixed, reviewed inspection scripts through the configured connection, never model-written code. It does not send geometry to an LLM by itself. It respects upstream safe mode without extending its allowlist.
 
 Preview limits: 250 visible geometry objects/instances, 45,000 vertices and 60,000 triangles. Objects beyond the mesh budget use bounding boxes; a warning identifies truncation. Evaluated geometry includes modifiers available in the current dependency graph. Render-only modifier visibility, particles, volumes, texture graphs, displacement, lighting and compositing may differ from a final render. Preview shading is deliberately simple. Use Images/final renders for actual appearance.
 
