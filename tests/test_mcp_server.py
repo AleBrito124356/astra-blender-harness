@@ -190,3 +190,30 @@ async def test_the_live_viewer_shares_the_agents_blender(tmp_path):
     finally:
         await astra.close()
     assert astra.hub.closing, "the server, not the viewer, owns the connection"
+
+
+async def test_quality_check_runs_the_labs_inspector_on_the_live_scene(tmp_path, blender_config):
+    from astra_blender import quality
+
+    if quality.lab() is None:
+        pytest.skip("Blender Quality Lab (API 1) is not installed")
+    if blender_config.transport != "headless":
+        pytest.skip("drives its own headless Blender")
+    astra = mcp_server.AstraServer(blender_config, tmp_path, viewer_port=None)
+    try:
+        assert "quality_check" in {t.name for t in mcp_server.tool_definitions(astra.lab is not None)}
+        await astra.call(
+            "run_python",
+            {
+                "code": "import bpy\nbpy.ops.mesh.primitive_uv_sphere_add(location=(0, 0, 3))\nbpy.context.object.name = 'Ball'"
+            },
+        )
+        result = await astra.call("quality_check", {})
+        report = result.content[0].text
+        assert not result.isError, report
+        assert report.startswith("Blender Quality Lab: ") and "gates pass - failing: materials" in report
+        assert "## Fix first" in report and "bpy.data.objects" in report
+        assert "'Ball' float" in report
+        assert (astra.session_dir / "technical.json").is_file()
+    finally:
+        await astra.close()

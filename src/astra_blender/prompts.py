@@ -22,6 +22,7 @@ Frame the whole motion using astra_frame_camera with start/middle/end frames and
 For animation use distinct articulated parts, meaningful pivot origins, a root controller and keyframes in radians.
 Use astra_keyframe_object for simple unanimated transforms, or query current bpy APIs for existing/advanced rigs.
 Plan 3-6 concrete acceptance criteria before building, then check each in review and report remaining issues.
+When astra_quality_check is offered, run it in review: apply its "Fix first" items you agree with in refine.
 Prefer coherent small edits to replacing a whole scene. After a Python error inspect partial changes before retrying.
 Every phase without tool calls must contain a useful non-empty phase summary.
 Inspect the current scene and Blender version first. Preserve existing work unless the brief asks otherwise.

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from jsonschema import ValidationError, validate
 
-from . import guard, motion, references, spatial
+from . import guard, motion, quality, references, spatial
 from .bridge import connect, discover
 from .config import MCPConfig, RunConfig
 from .history import repair_history
@@ -51,6 +51,7 @@ READ_ONLY = {
     "get_viewport_screenshot",
     "astra_inspect_scene",
     "astra_inspect_animation",
+    "astra_quality_check",
 }
 # "incomplete": the scene was built and saved, but a requested deliverable
 # (so far, animation) is missing. Continuable, and not a failure of anything.
@@ -392,6 +393,9 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
 
 async def _loop(run, session, tools, provider, state=None):
     tools = {**tools, **{tool.name: tool for tool in spatial.tools()}}
+    lab = quality.lab()
+    if lab is not None:
+        tools["astra_quality_check"] = quality.tool()
     messages = [
         {"role": "system", "content": SYSTEM},
         {
@@ -502,7 +506,17 @@ async def _loop(run, session, tools, provider, state=None):
             return "TOOL ERROR: user denied this action; do not repeat it", []
         run.emit("tool_call", tool=name, arguments=args, internal=internal)
         # Do not automatically retry a mutation: its result may be uncertain after timeout.
-        if name in {"astra_inspect_scene", "astra_frame_camera", *spatial.MOTION_FUNCTIONS}:
+        if name == "astra_quality_check":
+            result = await session.call_tool("execute_blender_code", {"code": quality.code(lab, args)})
+            text, images = result_parts(result)
+            if text.startswith("TOOL ERROR:"):
+                text += quality.SAFE_MODE_HINT
+            else:
+                text, inspection, report = quality.summary(lab, text, bool(args.get("strict_contact")))
+                (run.directory / "inspection.json").write_text(json.dumps(inspection), encoding="utf-8")
+                (run.directory / "technical.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+                run.emit("lab", message=text.split("\n", 1)[0])
+        elif name in {"astra_inspect_scene", "astra_frame_camera", *spatial.MOTION_FUNCTIONS}:
             code = spatial.tool_code(name, args)
             backend_args = {"code": code}
             if "user_prompt" in tools["execute_blender_code"].inputSchema.get("properties", {}):

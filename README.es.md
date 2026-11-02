@@ -125,7 +125,7 @@ El código de escena normal - primitivas, bmesh, modificadores, materiales con n
 
 El estudio y `astra-blender run` manejan Blender con el bucle propio de Astra y cualquier modelo de [LiteLLM](https://docs.litellm.ai/docs/providers):
 
-- **Planificar → construir → revisar → refinar → finalizar.** Planificar y revisar son de solo lectura. Evidencia numérica para cualquier modelo; imágenes del viewport para los que tienen visión. Draft omite el refinado; Final pide un render moderado.
+- **Planificar → construir → revisar → refinar → finalizar.** Planificar y revisar son de solo lectura. Evidencia numérica para cualquier modelo; imágenes del viewport para los que tienen visión. Con Blender Quality Lab instalado, la revisión también recibe `astra_quality_check` - las puertas del lab y su lista «Fix first» - y el refinado la aplica. Draft omite el refinado; Final pide un render moderado.
 - **Llamadas nativas a herramientas o acciones JSON estrictas** para modelos de texto sin herramientas, con reparación acotada de respuestas mal formadas.
 - **Selector de modelos** desde el catálogo de LiteLLM instalado, que marca soporte de herramientas y visión, y descubrimiento en vivo para pasarelas compatibles con OpenAI como NVIDIA NIM. Los identificadores que no se pueden enrutar se rechazan antes de empezar, indicando la forma correcta.
 - **Caché de prompts** para modelos Claude: el prompt de sistema y el mensaje más reciente se marcan como puntos de caché, así cada turno lee de caché la conversación anterior (se cobra una fracción). OpenAI y Gemini cachean solos. `manifest.json` registra los tokens cacheados. `--no-prompt-cache` lo desactiva para pasarelas que rechazan el campo.

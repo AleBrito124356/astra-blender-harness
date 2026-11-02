@@ -125,7 +125,7 @@ Ordinary scene code - primitives, bmesh, modifiers, node materials, drivers, key
 
 The studio and `astra-blender run` drive Blender with Astra's own loop, using any [LiteLLM](https://docs.litellm.ai/docs/providers) model:
 
-- **Plan → build → review → refine → finalize.** Planning and review are read-only. Numerical scene evidence for every model; viewport images for vision models. Draft skips refinement; Final asks for a modest render.
+- **Plan → build → review → refine → finalize.** Planning and review are read-only. Numerical scene evidence for every model; viewport images for vision models. With Blender Quality Lab installed, review also gets `astra_quality_check` - the lab's gates and "Fix first" list - and refine applies it. Draft skips refinement; Final asks for a modest render.
 - **Native tool calls, or strict JSON actions** for text models without tool use, with bounded repair of malformed responses.
 - **Model picker** from the installed LiteLLM catalog showing tool-calling and vision support, plus live model discovery for OpenAI-compatible gateways such as NVIDIA NIM. Unroutable identifiers are refused before the run starts, naming the prefixed form to use.
 - **Prompt caching** for Claude models: the system prompt and newest message are marked as cache breakpoints, so each turn reads the conversation before it from cache (billed at a fraction). OpenAI and Gemini cache automatically. Cached tokens are reported in `manifest.json`. `--no-prompt-cache` turns it off for gateways that reject the field.

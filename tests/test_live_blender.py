@@ -135,3 +135,38 @@ async def test_continuing_a_headless_run_reopens_its_scene_in_a_new_blender(tmp_
     assert restored and restored[0]["file"] == "stopped.blend"
     quality = json.loads((second.directory / "quality.json").read_text())
     assert name in [o["name"] for o in quality["objects"]]
+
+
+async def test_the_studio_loop_offers_the_quality_lab_in_review(tmp_path, blender_config):
+    from astra_blender import quality
+
+    if quality.lab() is None:
+        pytest.skip("Blender Quality Lab (API 1) is not installed")
+
+    class Reviewer:
+        def __init__(self):
+            self.offered = set()
+            self.called = False
+
+        async def complete(self, messages, tools):
+            names = {t["function"]["name"] for t in tools}
+            self.offered |= names
+            if "PHASE REVIEW" in json.dumps(messages[-3:]) and not self.called:
+                self.called = True
+                call = {
+                    "id": "qc",
+                    "type": "function",
+                    "function": {"name": "astra_quality_check", "arguments": "{}"},
+                }
+                return {"role": "assistant", "tool_calls": [call]}, {"total_tokens": 0}
+            return {"role": "assistant", "content": "Phase done."}, {"total_tokens": 0}
+
+    reviewer = Reviewer()
+    run = Run(
+        RunConfig(prompt="Review the scene with the lab.", model="test/scripted", auto_approve=True), tmp_path
+    )
+    await execute(run, blender_config, provider=reviewer)
+    assert run.status == "completed", run.events[-1]
+    assert "astra_quality_check" in reviewer.offered and reviewer.called
+    assert (run.directory / "technical.json").is_file()
+    assert any(e["type"] == "lab" and "gates pass" in e["message"] for e in run.events)

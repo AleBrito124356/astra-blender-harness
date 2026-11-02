@@ -48,7 +48,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1
-      - run: python -m pip install -e ".[dev]" "bpy==${{ matrix.bpy }}"
+      - run: python -m pip install -e ".[dev]" "bpy==${{ matrix.bpy }}" "blender-quality-lab @ git+https://github.com/AleBrito124356/blender-quality-lab"
       - run: python -m pytest -q tests/test_backends.py tests/test_live_blender.py tests/test_live_motion.py tests/test_mcp_server.py
         env:
           ASTRA_BLENDER: python

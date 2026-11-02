@@ -41,7 +41,7 @@ from mcp.types import (
     ToolAnnotations,
 )
 
-from . import __version__, guard, motion, spatial
+from . import __version__, guard, motion, quality, spatial
 from .bridge import discover
 from .engine import result_parts
 from .live import BlenderHub, LiveScene
@@ -196,42 +196,12 @@ def tool_definitions(quality_available):
             Tool(
                 name="quality_check",
                 title="Quality check (Blender Quality Lab)",
-                description="Blender Quality Lab's technical gates on the live scene - real render visibility "
-                "with ray casts, framing and occlusion, floating groups, light reach, materials, animation keys "
-                "- and a prioritized 'Fix first' list with ready-to-run Python. Read-only. Numbers are not "
-                "taste: passing gates does not prove a beautiful image.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "subject": {
-                            "type": "array",
-                            "items": {"type": "string", "maxLength": 128},
-                            "maxItems": 50,
-                            "description": "Object names or globs that are the subject (default: inferred).",
-                        },
-                        "subject_collection": {"type": "string", "maxLength": 128},
-                        "strict_contact": {
-                            "type": "boolean",
-                            "description": "Fail when touching groups float above a surface.",
-                        },
-                    },
-                    "additionalProperties": False,
-                },
+                description=quality.DESCRIPTION,
+                inputSchema=quality.SCHEMA,
                 annotations=READ_ONLY,
             )
         )
     return definitions
-
-
-def quality_lab():
-    """Blender Quality Lab's integration API, when installed and new enough."""
-    try:
-        from blender_quality import api
-    except ImportError:
-        return None
-    if getattr(api, "API_VERSION", 0) < 1 or not hasattr(api, "live_inspection_code"):
-        return None
-    return api
 
 
 def issue_key(issue):
@@ -272,7 +242,7 @@ class AstraServer:
         self.checkpoints = {}
         self.edits = 0
         self.looks = 0
-        self.lab = quality_lab()
+        self.lab = quality.lab()
 
     # -- plumbing ----------------------------------------------------------------
 
@@ -511,39 +481,19 @@ class AstraServer:
         return text_result(_rename(output) + "\n\n" + audit)
 
     async def quality_check(self, arguments):
-        lab = self.lab
-        code = lab.live_inspection_code(
-            subject=arguments.get("subject") or None,
-            subject_collection=arguments.get("subject_collection") or None,
-        )
-        result = await self.execute(code)
+        result = await self.execute(quality.code(self.lab, arguments))
         text, _ = result_parts(result)
         if text.startswith("TOOL ERROR:"):
-            hint = ""
-            if self.config.transport in {"stdio", "http"}:
-                hint = (
-                    " The upstream MCP server's safe mode rejects the inspector (it needs numpy); use the "
-                    "socket or headless backend for quality_check."
-                )
-            return error_result(text.removeprefix("TOOL ERROR: ") + hint)
-        inspection = lab.parse_live_output(text)
-        strict = bool(arguments.get("strict_contact"))
-        report = lab.score(inspection, strict_contact=strict)
-        markdown = lab.describe(inspection, fmt="md")
-        (self.session_dir / "inspection.json").write_text(json.dumps(inspection), encoding="utf-8")
-        (self.session_dir / "technical.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        gates = report.get("gates", [])
-        failed = [g for g in gates if not g.get("passed", g.get("pass", True))]
-        head = (
-            f"Blender Quality Lab: {len(gates) - len(failed)}/{len(gates)} gates pass"
-            + (
-                " - failing: " + ", ".join(str(g.get("name") or g.get("id")) for g in failed)
-                if failed
+            hint = (
+                quality.SAFE_MODE_HINT
+                if (self.hub.backend or self.config.transport) in {"mcp", "stdio", "http"}
                 else ""
             )
-            + "."
-        )
-        return text_result(head + "\n\n" + markdown)
+            return error_result(text.removeprefix("TOOL ERROR: ") + hint)
+        summary, inspection, report = quality.summary(self.lab, text, bool(arguments.get("strict_contact")))
+        (self.session_dir / "inspection.json").write_text(json.dumps(inspection), encoding="utf-8")
+        (self.session_dir / "technical.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        return text_result(_rename(summary))
 
     # -- viewer ----------------------------------------------------------------------
 
