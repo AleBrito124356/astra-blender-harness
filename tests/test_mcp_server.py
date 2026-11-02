@@ -126,6 +126,7 @@ async def test_an_agent_builds_checks_and_restores_through_mcp(tmp_path, blender
         assert not built.isError, report
         assert "Output:\nmade Planet" in report
         assert "After-edit audit" in report and "no_material: Planet" in report
+        assert "astra_" not in report, "internal tool names never reach the agent"
 
         refused = await client.call_tool("run_python", {"code": "import subprocess"})
         assert refused.isError and "Astra Guard" in text(refused)

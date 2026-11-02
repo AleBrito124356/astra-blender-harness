@@ -251,7 +251,7 @@ def describe_issue(issue):
         text += ": " + ", ".join(str(s) for s in subjects[:8]) + (" ..." if len(subjects) > 8 else "")
     if extras:
         text += " (" + ", ".join(extras) + ")"
-    return text + " - " + issue.get("message", "")
+    return text + " - " + _rename(issue.get("message", ""))
 
 
 class AstraServer:
@@ -400,7 +400,7 @@ class AstraServer:
             report["truncated"] = f"{len(objects) - MAX_OBJECTS} more objects; pass objects=[...] to focus"
             objects = objects[:MAX_OBJECTS]
         report["objects"] = objects
-        return text_result(json.dumps(report, ensure_ascii=False))
+        return text_result(_rename(json.dumps(report, ensure_ascii=False)))
 
     async def run_python(self, code, intent=""):
         if self.config.guard:
@@ -502,7 +502,7 @@ class AstraServer:
         if internal == "astra_inspect_animation":
             report = motion.report(spatial.parse_probe(result), spatial.diagnostics)
             (self.session_dir / "animation.json").write_text(json.dumps(report), encoding="utf-8")
-            return text_result(json.dumps(report, ensure_ascii=False))
+            return text_result(_rename(json.dumps(report, ensure_ascii=False)))
         output = text.removeprefix("Code executed successfully: ").strip()
         try:
             audit = self.delta(await self.audit())

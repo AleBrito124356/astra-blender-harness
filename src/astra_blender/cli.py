@@ -99,6 +99,9 @@ def main():
         default=[],
         help="Reference photo (repeat up to 3; requires vision)",
     )
+    run.add_argument(
+        "--no-prompt-cache", action="store_true", help="Do not mark cache breakpoints (Claude models)"
+    )
     run.add_argument("--animation", choices=["auto", "on", "off"], default="auto")
     run.add_argument("--frames", type=int, default=120)
     run.add_argument("--fps", type=int, default=24)
@@ -152,6 +155,7 @@ def main():
             quality=args.quality,
             max_steps=args.max_steps,
             request_timeout=args.request_timeout,
+            prompt_cache=not args.no_prompt_cache,
             animation=args.animation,
             animation_frames=args.frames,
             animation_fps=args.fps,

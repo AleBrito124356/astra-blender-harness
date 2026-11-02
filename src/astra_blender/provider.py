@@ -4,6 +4,18 @@ import json
 
 from .config import RunConfig
 
+# Claude models cache a prompt prefix only where the request marks one. The
+# loop resends the whole conversation every turn, so marking the system prompt
+# and the newest message lets each turn read everything before it from cache:
+# cached input is billed at a tenth of the price. OpenAI and Gemini cache
+# prefixes automatically and need nothing.
+CACHE_POINTS = [{"location": "message", "role": "system"}, {"location": "message", "index": -1}]
+
+
+def caches_explicitly(model):
+    name = model.lower()
+    return "claude" in name or name.startswith("anthropic/")
+
 
 class LiteLLMProvider:
     def __init__(self, config: RunConfig):
@@ -29,6 +41,8 @@ class LiteLLMProvider:
             kwargs["api_base"] = self.config.api_base
         if self.config.tool_mode == "native":
             kwargs["tools"] = tools
+        if self.config.prompt_cache and caches_explicitly(self.config.model):
+            kwargs["cache_control_injection_points"] = CACHE_POINTS
         try:
             response = await litellm.acompletion(**kwargs)
         except (litellm.APIConnectionError, litellm.InternalServerError):

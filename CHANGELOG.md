@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.0 — 2026-11-02
+
+Astra becomes the guarded Blender layer for any AI agent, not only for its own loop.
+
+### Added
+
+- **MCP server** (`astra-blender mcp`, stdio) for Claude Code, Codex, Cursor, Claude Desktop, VS Code, Gemini CLI or any MCP client. Tools: `blender_status`, `inspect_scene`, `run_python`, `look`, `frame_camera`, `assemble_parts`, `place_on_ground`, `keyframe_object`, `inspect_animation`, `checkpoint`, `restore_checkpoint`, and `quality_check` when Blender Quality Lab is installed. `run_python` answers with the script's output plus an after-edit audit delta: problems the edit introduced, problems it fixed, problems still open. The first edit of a session checkpoints the scene. Read-only and destructive tools carry MCP annotations. A `build_scene` prompt packages the workflow. Session files go to `runs/agent-<timestamp>/`.
+- **Live viewer for agent sessions**: the MCP server starts the studio on 127.0.0.1:8765 (or a free port) sharing its Blender connection, so a person watches what the agent builds. `--no-viewer` turns it off.
+- **Headless backend**: Astra starts a background Blender - the `bpy` wheel in a matching Python, or a Blender executable - running `headless_worker.py`, which speaks the Blender MCP add-on's socket protocol on 127.0.0.1 behind a per-process token. No GUI: CI, containers and cloud agents can build scenes. The worker gets an allowlisted environment (no API keys), opens `--file` with embedded scripts disabled, renders `look`/screenshot previews through the scene camera (Workbench, or Cycles CPU without EGL) and restores every render setting it touched, and exits when Astra does.
+- **Socket backend** (the new default for `serve` and `run`): Astra talks to the Blender MCP add-on directly. No `uvx`, no second MCP server process, one hop fewer for the live viewer, and no dependence on which tool names the upstream server exposes. Large replies are parsed without quadratic re-decoding; a command that times out resets the connection instead of reading its late answer as the next reply.
+- **`auto` backend** (default for `mcp`): the socket when the add-on is listening, otherwise headless, decided at each connection.
+- **Astra Guard**: static checks on model-written Python before it reaches Blender, on every backend - an import allowlist; no `eval`/`exec`/`open`/`__import__`, dunder attributes, frame internals or computed `getattr` names; no handlers, timers, class registration, text datablocks, linked libraries, script/preferences/extensions operators or auto-run; no scene-file operators. Refusals name the line and reason and happen before the approval prompt. Astra's reviewed scripts are not affected. `--no-guard` disables it.
+- **Prompt caching for Claude models** in the studio loop: the system prompt and newest message are cache breakpoints, so each turn reads the earlier conversation from cache. Cached tokens are counted in `manifest.json` and usage events. `--no-prompt-cache` turns it off.
+- **Claude Code plugin** (`.claude-plugin/`) with the MCP server and an `astra-blender` skill, installable from this repository as a marketplace.
+- CLI: `--backend`, `--blender`, `--file`, `--port-blender`, `--no-guard` on every command; `ASTRA_BACKEND` and `ASTRA_BLENDER` environment variables; `python -m astra_blender`; `doctor` reports the backend, the Blender found and its version.
+- `headless` extra (`bpy>=4.5`), `examples/` connection files, `docs/agents.md`.
+- CI workflow: tests on Linux, Windows and macOS with Python 3.11 and 3.13, the real-Blender tests against bpy 5.2 and 4.5, and the studio's browser checks with a bundle-reproducibility check.
+
+### Fixed
+
+- Blender MCP 2.x replaced `get_viewport_screenshot` with `look`, so discovery failed with "missing required tools" against the add-on users install today. Its `look` now stands in for the old name.
+- A Blender that could not be started or reached was reported as a generic disconnect; the studio's connection check now says what to start or install.
+- `uvx is not installed` went to stdout, which would corrupt the MCP protocol stream; it goes to stderr.
+
+### Changed
+
+- Default transport is `socket` instead of `stdio` running `uvx blender-mcp==1.9.1`. The upstream MCP server remains available as `--backend stdio` (see `examples/blender-mcp-server.json`).
+- The live integration tests no longer need a GUI Blender: they run against a headless Blender whenever `ASTRA_BLENDER` (or bpy, or `blender` on PATH) is available, or against `ASTRA_LIVE_MCP_CONFIG` as before.
+- `mcp>=1.30`. Model recommendations updated to current identifiers.
+
 ## 0.3.2 — 2026-09-14
 
 - The per-turn model timeout is a setting (default 300 s, was a hard-coded 120 s). A 2.8T reasoning model on NVIDIA NIM spent longer than that thinking before its first token, and the run had no way to wait.

@@ -129,6 +129,8 @@ class Run:
         self.approvals = {}
         self.steps = 0
         self.total_tokens = 0
+        # Input tokens the provider read from its prompt cache (billed at a fraction).
+        self.cached_tokens = 0
         self.created_at = time.time()
         # Set by execute(); lets a human approval pause the run deadline.
         self.deadline = None
@@ -339,6 +341,7 @@ async def execute(run: Run, mcp_config: MCPConfig, provider=None, connector=conn
             "quality": run.config.quality,
             "steps": run.steps,
             "total_tokens": run.total_tokens,
+            "cached_tokens": run.cached_tokens,
             "elapsed_seconds": round(time.time() - run.created_at, 2),
             "awaiting_approval_seconds": round(run.waited_for_approval, 2),
             "files": sorted(p.name for p in run.directory.iterdir() if p.is_file()),
@@ -600,7 +603,13 @@ async def _loop(run, session, tools, provider, state=None):
                 [{k: v for k, v in m.items() if k != "astra_reference"} for m in messages], offered
             )
             run.total_tokens += usage.get("total_tokens", 0) or 0
-            run.emit("usage", steps=run.steps, total_tokens=run.total_tokens)
+            details = usage.get("prompt_tokens_details") or {}
+            run.cached_tokens += (
+                (details.get("cached_tokens") if isinstance(details, dict) else 0)
+                or usage.get("cache_read_input_tokens")
+                or 0
+            )
+            run.emit("usage", steps=run.steps, total_tokens=run.total_tokens, cached_tokens=run.cached_tokens)
             calls = []
             if run.config.tool_mode == "json":
                 messages.append({"role": "assistant", "content": message.get("content") or ""})

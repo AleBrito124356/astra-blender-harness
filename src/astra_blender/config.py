@@ -104,6 +104,9 @@ class RunConfig(BaseModel):
     # the model finishes, another budget bites, or you press Stop.
     max_steps: int = Field(default=24, ge=0, le=2000)
     max_output_tokens: int = Field(default=4096, ge=512, le=16384)
+    # Mark cache breakpoints for providers that need them (Claude). Off only
+    # for gateways that reject the cache_control field.
+    prompt_cache: bool = True
     # How long one model turn may take. Reasoning models think before their
     # first token: a 2.8T MoE took longer than the old fixed 120 s, which was
     # not a setting and could not be raised.
