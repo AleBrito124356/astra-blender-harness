@@ -17,7 +17,7 @@ Blender puede ser **tu Blender abierto** (el add-on [Blender MCP](https://github
 
 ![Astra Blender Studio](docs/studio.png)
 
-> Versión 0.4.0. El backend headless, el servidor MCP y el bucle del motor están probados contra Blender 5.2.3 LTS y 4.5.15 LTS reales (headless, desde `bpy`). El backend socket está probado contra una réplica del protocolo del add-on; versiones anteriores se probaron con Blender 4.5.9/5.2.1 con interfaz a través de Blender MCP 1.9.1. La calidad de los modelos no está medida. Ver [validación](docs/validation.md).
+> Versión 0.4.1. El backend headless, el servidor MCP y el bucle del motor están probados contra Blender 5.2.3 LTS y 4.5.15 LTS reales (headless, desde `bpy`). El backend socket está probado contra una réplica del protocolo del add-on; versiones anteriores se probaron con Blender 4.5.9/5.2.1 con interfaz a través de Blender MCP 1.9.1. La calidad de los modelos no está medida. Ver [validación](docs/validation.md).
 
 ## Tres formas de usarlo
 

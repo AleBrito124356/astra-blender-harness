@@ -4,7 +4,7 @@ description: Builds, edits, frames, animates and checks Blender scenes through t
 license: MIT
 compatibility: Needs the astra-blender MCP server (`astra-blender mcp`, Python 3.11+). Blender comes from the Blender MCP add-on in a running Blender, or a headless Blender (the bpy wheel on Python 3.13, or a Blender executable).
 metadata:
-  version: "0.4.0"
+  version: "0.4.1"
   homepage: "https://github.com/AleBrito124356/astra-blender-harness"
 ---
 

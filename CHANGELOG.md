@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 — 2026-11-06
+
+- A turn that gets no answer is now one request, and the per-turn limit is a real deadline. 0.3.2 said a timed-out turn was not retried, and that was not true: `num_retries=0` only reaches LiteLLM's own retry, while the OpenAI client under it repeats a timed-out request twice more with nothing in the trace. On NVIDIA NIM a 300 s limit took 15 minutes, with the studio showing no progress. The limit now covers the whole turn, whatever the layers below decide to do, including the one retry for a transient failure.
+- A turn timeout can no longer be read as the run's own deadline.
+- 0.3.2's test replaced LiteLLM with a fake and could not see any of this. The new test uses a real socket that never answers and counts the requests that reach it.
+
 ## 0.4.0 — 2026-11-02
 
 Astra becomes the guarded Blender layer for any AI agent, not only for its own loop.
@@ -35,7 +41,7 @@ Astra becomes the guarded Blender layer for any AI agent, not only for its own l
 ## 0.3.2 — 2026-09-14
 
 - The per-turn model timeout is a setting (default 300 s, was a hard-coded 120 s). A 2.8T reasoning model on NVIDIA NIM spent longer than that thinking before its first token, and the run had no way to wait.
-- A timed-out turn is no longer retried. LiteLLM's own retry doubled the wait and the provider's bill for a generation that was discarded; transient connection and server errors are still retried once, as documented.
+- A timed-out turn is no longer retried (not actually true until 0.4.1: the OpenAI client under LiteLLM kept retrying). LiteLLM's own retry doubled the wait and the provider's bill for a generation that was discarded; transient connection and server errors are still retried once, as documented.
 - A timeout says which setting to raise instead of listing five things to check.
 - The studio notices when its own files on disk are newer than the running server - what a `git pull` with the server open leaves behind - and says to restart instead of refusing every run as an invalid request.
 - A rejected request names the fields it tripped on, by name only; values, including the API key, are still never echoed.

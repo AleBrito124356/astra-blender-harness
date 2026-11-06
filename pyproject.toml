@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astra-blender-harness"
-version = "0.4.0"
+version = "0.4.1"
 description = "Guarded Blender for AI agents and models: MCP server, headless Blender, Astra Guard, after-edit audits, live 3D viewer and a bounded studio loop."
 readme = "README.md"
 keywords = ["blender", "bpy", "mcp", "ai-agents", "3d", "headless", "claude-code", "guardrails"]

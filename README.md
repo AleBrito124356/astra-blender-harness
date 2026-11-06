@@ -17,7 +17,7 @@ Blender comes from **your open Blender** (the [Blender MCP](https://github.com/a
 
 ![Astra Blender Studio](docs/studio.png)
 
-> Version 0.4.0. The headless backend, the MCP server and the engine loop are tested against real Blender 5.2.3 LTS and 4.5.15 LTS (headless, from the bpy wheel). The socket backend is tested against a protocol replica of the add-on; earlier releases were tested with real Blender 4.5.9/5.2.1 GUI sessions through Blender MCP 1.9.1. Model quality is not benchmarked. See [validation](docs/validation.md).
+> Version 0.4.1. The headless backend, the MCP server and the engine loop are tested against real Blender 5.2.3 LTS and 4.5.15 LTS (headless, from the bpy wheel). The socket backend is tested against a protocol replica of the add-on; earlier releases were tested with real Blender 4.5.9/5.2.1 GUI sessions through Blender MCP 1.9.1. Model quality is not benchmarked. See [validation](docs/validation.md).
 
 ## Three ways in
 
