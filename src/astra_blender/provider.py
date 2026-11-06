@@ -1,5 +1,6 @@
 """Provider adaptation lives here; the engine knows only messages and tool calls."""
 
+import asyncio
 import json
 
 from .config import RunConfig
@@ -30,9 +31,6 @@ class LiteLLMProvider:
             messages=messages,
             max_tokens=self.config.max_output_tokens,
             timeout=self.config.request_timeout,
-            # Retries are handled here, not by LiteLLM, so a timeout is never one
-            # of them: a generation that ran out of time does not get faster on a
-            # second full attempt, and the provider has already billed the first.
             num_retries=0,
         )
         if self.config.api_key.get_secret_value():
@@ -43,11 +41,25 @@ class LiteLLMProvider:
             kwargs["tools"] = tools
         if self.config.prompt_cache and caches_explicitly(self.config.model):
             kwargs["cache_control_injection_points"] = CACHE_POINTS
+        # One deadline for the whole turn. A generation that ran out of time does
+        # not get faster on another attempt, and the provider has already billed
+        # the first. num_retries does not reach the OpenAI client under LiteLLM,
+        # which repeats a timed-out request twice by itself, so the limit has to
+        # sit above every layer: 300 s used to mean 15 silent minutes.
         try:
-            response = await litellm.acompletion(**kwargs)
-        except (litellm.APIConnectionError, litellm.InternalServerError):
-            # One retry for a transient failure, as documented.
-            response = await litellm.acompletion(**kwargs)
+            async with asyncio.timeout(self.config.request_timeout):
+                try:
+                    response = await litellm.acompletion(**kwargs)
+                except (litellm.APIConnectionError, litellm.InternalServerError):
+                    # One retry for a transient failure, as documented.
+                    response = await litellm.acompletion(**kwargs)
+        except TimeoutError as error:
+            # Not left as TimeoutError: the engine reads that as the run's own limit.
+            raise litellm.Timeout(
+                f"No answer within {self.config.request_timeout} s",
+                model=self.config.model,
+                llm_provider=self.config.model.partition("/")[0],
+            ) from error
         if not response.choices or response.choices[0].finish_reason in {"length", "content_filter"}:
             raise RuntimeError("Provider response was truncated or filtered; phase is incomplete")
         message = response.choices[0].message.model_dump(exclude_none=True)

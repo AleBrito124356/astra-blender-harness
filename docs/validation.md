@@ -42,6 +42,13 @@ Exercised against a live Blender 5.2.1 LTS session with 54 objects (a house, a c
 - Safe mode rejects `hashlib`; digests use the `hash()` builtin. Browser tests were run with an installed Edge (`ASTRA_BROWSER_CHANNEL=msedge`) because the Playwright Chromium on the machine did not match the package version.
 - The four still-scene briefs that were auto-classified as animation ("motion blur", "walking path", "luz anima la escena", "rotating-door mechanism") now complete as still scenes; a Motion: Animate run without keyframes ends as `incomplete` with `scene.blend` saved.
 
+## 0.4.1 turn deadline (2026-11-06)
+
+Windows 11, Python 3.14, LiteLLM 1.100.0, real Blender 5.2.1 LTS.
+
+- Against a local socket that accepts a request and never answers, a 3 s limit produced 3 requests in 11 s before this change and 1 request in 3 s after it. `num_retries=0` and `max_retries=0` both left it at 3.
+- The failure was seen on a real run: `deepseek-ai/deepseek-v4.1-flash` on NVIDIA NIM gave no answer, and the connection to NVIDIA was reopened at 300 s and 600 s with no event in the trace.
+
 ## 0.4.0 agent-native release (2026-11-02)
 
 Exercised on Linux (x86-64 container, no GPU, Mesa software EGL), Python 3.13, against real Blender from the PyPI `bpy` wheels **5.2.3 LTS** (Python 3.13) and **4.5.15 LTS** (Python 3.11), headless:

@@ -12,7 +12,7 @@
       "name": "astra-blender",
       "source": "./",
       "description": "Build Blender scenes from Claude Code with guarded Python, after-edit audits, reviewed camera/assembly/animation tools, checkpoints and a live 3D viewer. Works with a desktop Blender or headless.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "category": "creative",
       "keywords": ["blender", "3d", "mcp", "headless"]
     }

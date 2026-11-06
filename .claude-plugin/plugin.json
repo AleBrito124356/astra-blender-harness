@@ -1,6 +1,6 @@
 {
   "name": "astra-blender",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Guarded Blender for AI agents: build scenes in your open Blender (Blender MCP add-on) or a headless Blender, with static checks on model-written Python, an audit after every edit, reviewed camera/assembly/animation tools, checkpoints, quality gates and a live 3D viewer.",
   "author": {
     "name": "Alejandro Brito",
